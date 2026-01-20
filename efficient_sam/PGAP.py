@@ -390,56 +390,55 @@ class HQSAM_PGAP_Wrapper(nn.Module):
             param.requires_grad = False
 
     def forward(self, input_images: torch.Tensor):
-        with torch.no_grad():
-            if hasattr(self.sam, "get_image_embeddings"):
-                image_embeddings, interms = self.sam.get_image_embeddings(input_images)
-            else:
-                image_embeddings = self.sam.image_encoder(input_images)
-                interms = None
+        if hasattr(self.sam, "get_image_embeddings"):
+            image_embeddings, interms = self.sam.get_image_embeddings(input_images)
+        else:
+            image_embeddings = self.sam.image_encoder(input_images)
+            interms = None
 
-            point_coords, point_labels, saliency_map = self.pgap(input_images)
+        point_coords, point_labels, saliency_map = self.pgap(input_images)
 
-            if point_coords.dim() == 3:
-                point_coords = point_coords.unsqueeze(1)
-            if point_labels.dim() == 2:
-                point_labels = point_labels.unsqueeze(1)
+        if point_coords.dim() == 3:
+            point_coords = point_coords.unsqueeze(1)
+        if point_labels.dim() == 2:
+            point_labels = point_labels.unsqueeze(1)
 
-            if hasattr(self.sam, "predict_masks"):
-                h, w = input_images.shape[-2:]
-                masks, _ = self.sam.predict_masks(
-                    image_embeddings,
-                    interms,
-                    point_coords,
-                    point_labels,
-                    multimask_output=False,
-                    input_h=h,
-                    input_w=w,
-                    output_h=h,
-                    output_w=w,
-                    hq_token_only=False,
-                )
-                masks = masks[:, 0, 0]
-            else:
-                sparse_embeddings, dense_embeddings = self.sam.prompt_encoder(
-                    points=(point_coords, point_labels),
-                    boxes=None,
-                    masks=None,
-                )
-                low_res_masks, _ = self.sam.mask_decoder(
-                    image_embeddings=image_embeddings,
-                    image_pe=self.sam.prompt_encoder.get_dense_pe(),
-                    sparse_prompt_embeddings=sparse_embeddings,
-                    dense_prompt_embeddings=dense_embeddings,
-                    multimask_output=False,
-                    hq_token_only=False,
-                    interm_embeddings=interms,
-                )
-                h, w = input_images.shape[-2:]
-                masks = F.interpolate(
-                    low_res_masks,
-                    size=(h, w),
-                    mode="bilinear",
-                    align_corners=False,
-                )
+        if hasattr(self.sam, "predict_masks"):
+            h, w = input_images.shape[-2:]
+            masks, _ = self.sam.predict_masks(
+                image_embeddings,
+                interms,
+                point_coords,
+                point_labels,
+                multimask_output=False,
+                input_h=h,
+                input_w=w,
+                output_h=h,
+                output_w=w,
+                hq_token_only=False,
+            )
+            masks = masks[:, 0, 0]
+        else:
+            sparse_embeddings, dense_embeddings = self.sam.prompt_encoder(
+                points=(point_coords, point_labels),
+                boxes=None,
+                masks=None,
+            )
+            low_res_masks, _ = self.sam.mask_decoder(
+                image_embeddings=image_embeddings,
+                image_pe=self.sam.prompt_encoder.get_dense_pe(),
+                sparse_prompt_embeddings=sparse_embeddings,
+                dense_prompt_embeddings=dense_embeddings,
+                multimask_output=False,
+                hq_token_only=False,
+                interm_embeddings=interms,
+            )
+            h, w = input_images.shape[-2:]
+            masks = F.interpolate(
+                low_res_masks,
+                size=(h, w),
+                mode="bilinear",
+                align_corners=False,
+            )
 
         return masks, saliency_map

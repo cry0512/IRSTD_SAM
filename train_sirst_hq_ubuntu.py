@@ -159,8 +159,7 @@ def sample_points_from_mask(mask_bhw: torch.Tensor, n_pos=4, n_neg=4, boundary_p
 
 
 def pgap_with_random_neg(pgap, images: torch.Tensor, masks: torch.Tensor, n_neg: int):
-    with torch.no_grad():
-        pgap_pts, pgap_lbl, _ = pgap(images)
+    pgap_pts, pgap_lbl, _ = pgap(images)
     if n_neg <= 0:
         return pgap_pts, pgap_lbl
     B, H, W = masks.shape
@@ -294,6 +293,8 @@ def _build_pgap_prompts(pgap, images, masks, args):
 
 def train_one_epoch(model, loader, optimizer, scaler, device, epoch, args, pgap=None):
     model.train()
+    if pgap is not None:
+        pgap.train()
     bce = nn.BCEWithLogitsLoss()
     meter_loss, n = 0.0, 0
     for batch in loader:
@@ -304,7 +305,8 @@ def train_one_epoch(model, loader, optimizer, scaler, device, epoch, args, pgap=
         with autocast():
             img_emb, interms = model.get_image_embeddings(images)
             if pgap is not None:
-                pgap_pts, pgap_lbl, _ = _build_pgap_prompts(pgap, images, masks, args)
+                pgap_pts, pgap_lbl, saliency = _build_pgap_prompts(pgap, images, masks, args)
+                img_emb = model.apply_saliency_modulation(img_emb, saliency)
                 pts = pgap_pts.unsqueeze(1)
                 lbl = pgap_lbl.unsqueeze(1)
                 pts, lbl = pts.to(device), lbl.to(device)
@@ -368,6 +370,8 @@ def train_one_epoch(model, loader, optimizer, scaler, device, epoch, args, pgap=
 @torch.no_grad()
 def validate(model, loader, device, args, epoch: int, pgap=None):
     model.eval()
+    if pgap is not None:
+        pgap.eval()
     total_inter = 0.0
     total_union = 0.0
     niou_sum = 0.0
@@ -386,6 +390,7 @@ def validate(model, loader, device, args, epoch: int, pgap=None):
         if pgap is not None:
             if getattr(args, "pgap_two_stage", False):
                 pgap_pts, pgap_lbl, saliency = pgap(images)
+                img_emb = model.apply_saliency_modulation(img_emb, saliency)
                 pos_pts, pos_lbl = _select_topk_points(pgap_pts, pgap_lbl, args.pgap_stage1_top_k)
                 pts1 = pos_pts.unsqueeze(1).to(device)
                 lbl1 = pos_lbl.unsqueeze(1).to(device)
@@ -411,7 +416,8 @@ def validate(model, loader, device, args, epoch: int, pgap=None):
                 lbl = torch.cat([pos_lbl, neg_lbl], dim=1).unsqueeze(1)
                 pts, lbl = pts.to(device), lbl.to(device)
             else:
-                pgap_pts, pgap_lbl, _ = _build_pgap_prompts(pgap, images, masks, args)
+                pgap_pts, pgap_lbl, saliency = _build_pgap_prompts(pgap, images, masks, args)
+                img_emb = model.apply_saliency_modulation(img_emb, saliency)
                 pts = pgap_pts.unsqueeze(1)
                 lbl = pgap_lbl.unsqueeze(1)
                 pts, lbl = pts.to(device), lbl.to(device)
@@ -772,6 +778,8 @@ def main():
         p_.requires_grad = bool(args.train_prompt_encoder_during_freeze)
 
     head_params = [p for p in list(model.prompt_encoder.parameters()) + list(model.mask_decoder.parameters()) if p.requires_grad]
+    if hasattr(model, "saliency_adapter") and model.saliency_adapter is not None:
+        head_params += list(model.saliency_adapter.parameters())
     enc_params = [p_ for p_ in model.image_encoder.parameters() if p_.requires_grad]
 
     optimizer = torch.optim.AdamW([
@@ -803,6 +811,8 @@ def main():
                     p_.requires_grad = True
             # Rebuild optimizer to include newly trainable params
             head_params = [p for p in list(model.prompt_encoder.parameters()) + list(model.mask_decoder.parameters()) if p.requires_grad]
+            if hasattr(model, "saliency_adapter") and model.saliency_adapter is not None:
+                head_params += list(model.saliency_adapter.parameters())
             enc_params = [p_ for p_ in model.image_encoder.parameters() if p_.requires_grad]
             optimizer = torch.optim.AdamW([
                 {"params": head_params, "lr": args.lr_head},

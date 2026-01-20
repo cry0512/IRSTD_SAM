@@ -29,11 +29,33 @@ class EfficientSamHQ(nn.Module):
         self.mask_decoder = mask_decoder
         self.register_buffer("pixel_mean", torch.Tensor(pixel_mean).view(1, 3, 1, 1), False)
         self.register_buffer("pixel_std", torch.Tensor(pixel_std).view(1, 3, 1, 1), False)
+        try:
+            neck_dim = int(self.image_encoder.neck[0].out_channels)
+        except Exception:
+            neck_dim = int(getattr(self.image_encoder, "transformer_output_dim", 256))
+        mid_dim = max(1, neck_dim // 4)
+        self.saliency_adapter = nn.Sequential(
+            nn.Conv2d(1, mid_dim, kernel_size=3, padding=1),
+            nn.BatchNorm2d(mid_dim),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(mid_dim, neck_dim, kernel_size=1),
+            nn.Sigmoid(),
+        )
 
     @torch.jit.export
     def get_image_embeddings(self, batched_images) -> Tuple[torch.Tensor, torch.Tensor]:
         batched_images = self.preprocess(batched_images)
         return self.image_encoder(batched_images)
+
+    def apply_saliency_modulation(self, image_embeddings: torch.Tensor, saliency_map: torch.Tensor) -> torch.Tensor:
+        if saliency_map is None:
+            return image_embeddings
+        target_h, target_w = image_embeddings.shape[-2:]
+        saliency_small = F.interpolate(
+            saliency_map, size=(target_h, target_w), mode="bilinear", align_corners=False
+        )
+        modulation_weight = self.saliency_adapter(saliency_small)
+        return image_embeddings * (1.0 + modulation_weight)
 
     def predict_masks(
         self,

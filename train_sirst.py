@@ -201,6 +201,8 @@ def _build_pgap_prompts(pgap, images, masks, args):
 
 def train_one_epoch(model, loader, optimizer, scaler, device, epoch, args, pgap=None):
     model.train()
+    if pgap is not None:
+        pgap.train()
     bce = nn.BCEWithLogitsLoss()
     meter_loss, n = 0.0, 0
     for batch in loader:
@@ -210,7 +212,8 @@ def train_one_epoch(model, loader, optimizer, scaler, device, epoch, args, pgap=
         with autocast_ctx(device):
             img_emb = model.get_image_embeddings(images)
             if pgap is not None:
-                pgap_pts, pgap_lbl, _ = _build_pgap_prompts(pgap, images, masks, args)
+                pgap_pts, pgap_lbl, saliency = _build_pgap_prompts(pgap, images, masks, args)
+                img_emb = model.apply_saliency_modulation(img_emb, saliency)
                 pts = pgap_pts.unsqueeze(1)
                 lbl = pgap_lbl.unsqueeze(1)
                 pts, lbl = pts.to(device), lbl.to(device)
@@ -234,6 +237,8 @@ def train_one_epoch(model, loader, optimizer, scaler, device, epoch, args, pgap=
 
 def validate(model, loader, device, args, pgap=None):
     model.eval()
+    if pgap is not None:
+        pgap.eval()
     total_inter = 0.0
     total_union = 0.0
     niou_sum = 0.0
@@ -253,6 +258,7 @@ def validate(model, loader, device, args, pgap=None):
             if pgap is not None:
                 if getattr(args, "pgap_two_stage", False):
                     pgap_pts, pgap_lbl, saliency = pgap(images)
+                    img_emb = model.apply_saliency_modulation(img_emb, saliency)
                     pos_pts, pos_lbl = _select_topk_points(pgap_pts, pgap_lbl, args.pgap_stage1_top_k)
                     pts1 = pos_pts.unsqueeze(1).to(device)
                     lbl1 = pos_lbl.unsqueeze(1).to(device)
@@ -269,7 +275,8 @@ def validate(model, loader, device, args, pgap=None):
                     lbl = torch.cat([pos_lbl, neg_lbl], dim=1).unsqueeze(1)
                     pts, lbl = pts.to(device), lbl.to(device)
                 else:
-                    pgap_pts, pgap_lbl, _ = _build_pgap_prompts(pgap, images, masks, args)
+                    pgap_pts, pgap_lbl, saliency = _build_pgap_prompts(pgap, images, masks, args)
+                    img_emb = model.apply_saliency_modulation(img_emb, saliency)
                     pts = pgap_pts.unsqueeze(1)
                     lbl = pgap_lbl.unsqueeze(1)
                     pts, lbl = pts.to(device), lbl.to(device)
@@ -543,6 +550,8 @@ def main():
 
     # Optimizer param groups
     head_params = list(model.prompt_encoder.parameters()) + list(model.mask_decoder.parameters())
+    if hasattr(model, "saliency_adapter") and model.saliency_adapter is not None:
+        head_params += list(model.saliency_adapter.parameters())
     if hasattr(model.image_encoder, "freq_gate") and model.image_encoder.freq_gate is not None:
         head_params += list(model.image_encoder.freq_gate.parameters())
     if hasattr(model.image_encoder, "radial_gate") and model.image_encoder.radial_gate is not None:
