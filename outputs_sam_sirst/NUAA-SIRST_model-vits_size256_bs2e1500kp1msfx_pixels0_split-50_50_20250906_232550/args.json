@@ -1,0 +1,20 @@
+{
+  "data_root": "E:\\code\\SIRST-5K-main\\SIRST-5K-main\\dataset\\NUAA-SIRST",
+  "train_txt": "50_50\\train.txt",
+  "val_txt": "50_50\\test.txt",
+  "size": 256,
+  "keep_ratio_pad": true,
+  "epochs": 1500,
+  "batch_size": 2,
+  "workers": 4,
+  "n_pos": 4,
+  "n_neg": 4,
+  "lr_head": 0.0001,
+  "lr_encoder": 1e-05,
+  "weight_decay": 0.01,
+  "out_dir": "./outputs_sam_sirst",
+  "exp_name": "NUAA-SIRST_model-vits_size256_bs2e1500kp1msfx_pixels0_split-50_50",
+  "mask_suffix": "_pixels0",
+  "thr": 0.5,
+  "model": "vits"
+}

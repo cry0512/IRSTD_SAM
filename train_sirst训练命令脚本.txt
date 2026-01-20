@@ -1,0 +1,211 @@
+-------------asg模块windows训练脚本
+$env:PYTHONUNBUFFERED=1
+$env:CUDA_VISIBLE_DEVICES="0"
+$ROOT="E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST"   # 按你的实际路径修改
+$SIZE=256; $BS=4; $EPOCHS=1000; $MODEL="vitt"; $KP=1; $TRAIN_DIR="50_50"
+$DATASET=(Split-Path $ROOT -Leaf); $SPLIT_TAG="_split-$TRAIN_DIR"
+$EXP="${DATASET}_model-${MODEL}_size${SIZE}_ASG2_r64_t128_bs${BS}_e${EPOCHS}${SPLIT_TAG}"
+$kpFlag = if ($KP -eq 1) { "--keep_ratio_pad" } else { "" }
+$TS = Get-Date -Format "yyyyMMdd_HHmmss"
+$LOG_ROOT = "outputs_sam_sirst_logs\${EXP}_$TS"; New-Item -ItemType Directory -Force -Path $LOG_ROOT | Out-Null
+$LOG_FILE = "$LOG_ROOT\train_$TS.log"
+python -u train_sirst.py `
+  --data_root "$ROOT" --train_txt "$TRAIN_DIR\train.txt" --val_txt "$TRAIN_DIR\test.txt" `
+  --size $SIZE $kpFlag --batch_size $BS --epochs $EPOCHS --model $MODEL `
+  --use_asg --asg_variant asg2 --asg_radial_bins 64 --asg_angular_bins 128 --asg_strength 1.0 `
+  --exp_name "$EXP" 2>&1 | Tee-Object -FilePath $LOG_FILE
+
+
+-------------asg模块ubuntu训练脚本
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=0;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_ASG2_r64_t128_bs${BS}_e${EPOCHS}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+LOG_ROOT="outputs_sam_sirst_logs/${EXP}_$(date +%Y%m%d_%H%M%S)"; mkdir -p "$LOG_ROOT";
+python -u train_sirst.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --use_asg --asg_variant asg2 --asg_radial_bins 64 --asg_angular_bins 128 --asg_strength 1.0 \
+  --exp_name "$EXP" \
+  2>&1 | tee "$LOG_ROOT/train.log"' >/dev/null 2>&1 &
+
+-------------pgap模块ubuntu训练NUDT脚本
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=1;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_PGAP_k5_d10_bs${BS}_e${EPOCHS}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+LOG_ROOT="outputs_sam_sirst_logs/${EXP}_$(date +%Y%m%d_%H%M%S)"; mkdir -p "$LOG_ROOT";
+python -u train_sirst.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --use_pgap --pgap_top_k 5 --pgap_min_dist 10 --pgap_saliency_thr 0.1 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --exp_name "$EXP" \
+  2>&1 | tee "$LOG_ROOT/train.log"' >/dev/null 2>&1 &
+
+-------------pgap模块ubuntu训练1k脚本
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=0;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/IRSTD-1k";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_PGAP_k5_d10_bs${BS}_e${EPOCHS}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+LOG_ROOT="outputs_sam_sirst_logs/${EXP}_$(date +%Y%m%d_%H%M%S)"; mkdir -p "$LOG_ROOT";
+python -u train_sirst.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --use_pgap --pgap_top_k 5 --pgap_min_dist 10 --pgap_saliency_thr 0.1 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --exp_name "$EXP" \
+  2>&1 | tee "$LOG_ROOT/train.log"' >/dev/null 2>&1 &
+
+-------------pgap模块ubuntu训练NUAA脚本
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=1;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUAA-SIRST"; MASK_SFX="_pixels0";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_PGAP_k5_d10_bs${BS}_e${EPOCHS}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+LOG_ROOT="outputs_sam_sirst_logs/${EXP}_$(date +%Y%m%d_%H%M%S)"; mkdir -p "$LOG_ROOT";
+python -u train_sirst.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --use_pgap --pgap_top_k 5 --pgap_min_dist 10 --pgap_saliency_thr 0.1 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 --mask_suffix "$MASK_SFX" \
+  --exp_name "$EXP" \
+  2>&1 | tee "$LOG_ROOT/train.log"' >/dev/null 2>&1 &
+
+-------------pgap模块的 DCT/无窗/动态阈值/边界屏蔽--ubuntu训练NUDT脚本
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=1;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_PGAP_DCT_nowin_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --val_thr_search \
+  --use_pgap --pgap_use_dct --pgap_no_window \
+  --pgap_dyn_quantile 0.9 --pgap_dyn_mode max \
+  --pgap_border_width 12 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --exp_name "$EXP" \
+  >/dev/null 2>&1 &'
+
+-------------pgap模块的 DCT/无窗/动态阈值/边界屏蔽--ubuntu训练1K脚本
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=1;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/IRSTD-1k";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_PGAP_DCT_nowin_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --val_thr_search \
+  --use_pgap --pgap_use_dct --pgap_no_window \
+  --pgap_dyn_quantile 0.9 --pgap_dyn_mode max \
+  --pgap_border_width 12 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --exp_name "$EXP" \
+  >/dev/null 2>&1 &'
+
+-------------pgap模块的 DCT/无窗/动态阈值/边界屏蔽--ubuntu训练NUAA脚本
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=0;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUAA-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; MASK_SFX="_pixels0";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; SFX_TAG="msfx${MASK_SFX#}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_PGAP_DCT_nowin_bs${BS}_e${EPOCHS}_kp${KP}${SFX_TAG}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --mask_suffix "$MASK_SFX" \
+  --val_thr_search \
+  --use_pgap --pgap_use_dct --pgap_no_window \
+  --pgap_dyn_quantile 0.9 --pgap_dyn_mode max \
+  --pgap_border_width 12 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --exp_name "$EXP" \
+  >/dev/null 2>&1 &'
+
+
+-------------pgap模块的 DCT/无窗/动态阈值/边界屏蔽+noborder--ubuntu训练脚本
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=1;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=0; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_PGAP_DCT_nowin_noborder_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --val_thr_search \
+  --use_pgap --pgap_use_dct --pgap_no_window \
+  --pgap_dyn_quantile 0.9 --pgap_dyn_mode max \
+  --pgap_border_width 0 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --exp_name "$EXP" \
+  >/dev/null 2>&1 &'
+
+
+-------------pgap模块的 DCT/无窗/动态阈值/边界屏蔽+noborder--ubuntu训练脚本
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=0;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=0; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_PGAP_DCT_fixtop_nowin_noborder_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --val_thr_search \
+  --use_pgap --pgap_use_dct --pgap_no_window --pgap_no_dynamic_topk \
+  --pgap_dyn_quantile 0.9 --pgap_dyn_mode max \
+  --pgap_border_width 0 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --exp_name "$EXP" \
+  >/dev/null 2>&1 &'
+
+---------------PGAP 背景峰值→负点监督 + 两步 prompting-ubuntu版本
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=6;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_PGAP_2stages_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --val_thr_search \
+  --use_pgap \
+  --pgap_label_by_gt --pgap_min_pos 1 --pgap_max_neg 2 \
+  --pgap_two_stage --pgap_stage1_top_k 1 --pgap_stage1_thr 0.5 --pgap_stage2_neg 2 \
+  --pgap_top_k 5 --pgap_dyn_quantile 0.9 --pgap_dyn_mode max \
+  --pgap_border_width 12 --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --exp_name "$EXP" \
+  >/dev/null 2>&1 &'
+
+-------------asg+pgap模块ubuntu训练脚本
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=2;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_ASG2_PGAP_bs${BS}_e${EPOCHS}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+LOG_ROOT="outputs_sam_sirst_logs/${EXP}_$(date +%Y%m%d_%H%M%S)"; mkdir -p "$LOG_ROOT";
+python -u train_sirst.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --use_asg --asg_variant asg2 --asg_radial_bins 64 --asg_angular_bins 128 --asg_strength 1.0 \
+  --use_pgap --pgap_top_k 5 --pgap_min_dist 10 --pgap_saliency_thr 0.1 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --exp_name "$EXP" \
+  2>&1 | tee "$LOG_ROOT/train.log"' >/dev/null 2>&1 &
+
+

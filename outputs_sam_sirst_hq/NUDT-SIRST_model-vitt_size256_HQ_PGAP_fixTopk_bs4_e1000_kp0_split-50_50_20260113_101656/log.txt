@@ -1,0 +1,1 @@
+Run directory: ./outputs_sam_sirst_hq\NUDT-SIRST_model-vitt_size256_HQ_PGAP_fixTopk_bs4_e1000_kp0_split-50_50_20260113_101656

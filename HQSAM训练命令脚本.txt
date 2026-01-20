@@ -1,0 +1,982 @@
+NUDT‑SIRST（GPU 0）（注意哪张卡！！！什么预训练模型！！！)
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST"; \
+GPU=4; SIZE=256; BS=4; EPOCHS=1500; MODEL="vits"; KP=1; TRAIN_DIR="50_50"; MASK_SFX=""; \
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; SFX_TAG=""; \
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_bs${BS}e${EPOCHS}kp${KP}${SFX_TAG}${SPLIT_TAG}"; \
+TS=$(date +'%Y%m%d%H%M%S'); LOG_ROOT="outputs_sam_sirst_logs/${EXP}${TS}"; mkdir -p "$LOG_ROOT"; \
+CUDA_VISIBLE_DEVICES=${GPU} PYTHONUNBUFFERED=1 nohup python3 -u train_sirst.py \
+--data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+--size $SIZE $( [ "$KP" = 1 ] && echo --keep_ratio_pad ) \
+--batch_size $BS --epochs $EPOCHS --model "$MODEL" \
+--exp_name "$EXP">"$LOG_ROOT/train_${TS}.log" 2>&1 &
+
+NUDT‑SIRST（GPU 0）（注意哪张卡！！！什么预训练模型！！！)
+#HQ-SAM
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST"; \
+GPU=2; SIZE=512; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; MASK_SFX=""; \
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; SFX_TAG=""; \
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_use_HQ_param_bs${BS}e${EPOCHS}kp${KP}${SFX_TAG}${SPLIT_TAG}"; \
+TS=$(date +'%Y%m%d%H%M%S'); LOG_ROOT="outputs_sam_sirst_logs/${EXP}${TS}"; mkdir -p "$LOG_ROOT"; \
+CUDA_VISIBLE_DEVICES=${GPU} PYTHONUNBUFFERED=1 nohup python3 -u train_sirst_hq_ubuntu.py \
+--data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+--size $SIZE $( [ "$KP" = 1 ] && echo --keep_ratio_pad ) \
+--batch_size $BS --epochs $EPOCHS --model "$MODEL" \
+--boundary_prior_sampling --boundary_ratio 0.5 \
+--use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 \
+--val_thr_search \
+--init_from_baseline weights/efficient_sam_vitt.pt --hq_warmup_epochs 30 \
+--exp_name "$EXP">"$LOG_ROOT/train_${TS}.log" 2>&1 &
+
+NUDT‑SIRST（GPU 0）（注意哪张卡！！！什么预训练模型！！！)
+#HQ-SAM+radial  #计算freq_loss  --freq_consistency_weight 0.05 --freq_consistency_bins 48 \
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST"; \
+GPU=6; SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; MASK_SFX=""; \
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; SFX_TAG=""; \
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_use_HQ_radial_edge_high_bs${BS}e${EPOCHS}kp${KP}${SFX_TAG}${SPLIT_TAG}"; \
+TS=$(date +'%Y%m%d%H%M%S'); LOG_ROOT="outputs_sam_sirst_logs/${EXP}${TS}"; mkdir -p "$LOG_ROOT"; \
+CUDA_VISIBLE_DEVICES=${GPU} PYTHONUNBUFFERED=1 nohup python3 -u train_sirst_hq_ubuntu.py \
+--data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+--size $SIZE $( [ "$KP" = 1 ] && echo --keep_ratio_pad ) \
+--batch_size $BS --epochs $EPOCHS --model "$MODEL" \
+--boundary_prior_sampling --boundary_ratio 0.5 \
+--use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 \
+--val_thr_search \
+--use_radial_gate_hq --rgate_loc both --freq_patch_size_hq 8 \
+--radial_bins_hq 6 --radial_channel_shared_hq --rgate_strength_enc 0.5 --rgate_strength_dec 0.5 \
+--rgate_edge_boost 0.5 --rgate_high_freq_thresh 0.6 \
+--init_from_baseline weights/efficient_sam_vitt.pt --hq_warmup_epochs 30 \
+--exp_name "$EXP">"$LOG_ROOT/train_${TS}.log" 2>&1 &
+
+NUDT‑SIRST（GPU 0）（注意哪张卡！！！什么预训练模型！！！)
+#HQ-SAM+radial+IRSAM数据集划分
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST"
+SPLIT_ROOT="/DATA20T/bip/cry/code/EfficientSAM-main/IRSAM_datasets/NUDT-SIRST00" # 假设你的 txt 在这里
+TRAIN_TXT="$SPLIT_ROOT/trainval.txt"
+VAL_TXT="$SPLIT_ROOT/test.txt"
+GPU=6; SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; MASK_SFX=""; \
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; SFX_TAG=""; \
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_use_HQ_radial_bs${BS}e${EPOCHS}kp${KP}${SFX_TAG}${SPLIT_TAG}"; \
+TS=$(date +'%Y%m%d%H%M%S'); LOG_ROOT="outputs_sam_sirst_logs/${EXP}${TS}"; mkdir -p "$LOG_ROOT"; \
+CUDA_VISIBLE_DEVICES=${GPU} PYTHONUNBUFFERED=1 nohup python3 -u train_sirst_hq_ubuntu.py \
+--data_root "$ROOT" --train_txt "$TRAIN_TXT" --val_txt "$VAL_TXT" \
+--size $SIZE $( [ "$KP" = 1 ] && echo --keep_ratio_pad ) \
+--batch_size $BS --epochs $EPOCHS --model "$MODEL" \
+--boundary_prior_sampling --boundary_ratio 0.5 \
+--use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 \
+--val_thr_search \
+--use_radial_gate_hq --rgate_loc both --freq_patch_size_hq 8 \
+--radial_bins_hq 6 --radial_channel_shared_hq --rgate_strength_enc 0.5 --rgate_strength_dec 0.5 \
+--init_from_baseline weights/efficient_sam_vitt.pt --hq_warmup_epochs 30 \
+--exp_name "$EXP">"$LOG_ROOT/train_${TS}.log" 2>&1 &
+
+nudt_freq
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST"; \
+GPU=1; SIZE=256; BS=2; EPOCHS=1000; MODEL="vits"; KP=1; TRAIN_DIR="50_50"; MASK_SFX=""; N_POS=4; \
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; SFX_TAG=""; \
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_use_freq_gate_bs${BS}_e${EPOCHS}kp${KP}${SFX_TAG}${SPLIT_TAG}"; \
+TS=$(date +'%Y%m%d%H%M%S'); LOG_ROOT="outputs_sam_sirst_logs/${EXP}${TS}"; mkdir -p "$LOG_ROOT"; \
+CUDA_VISIBLE_DEVICES=${GPU} PYTHONUNBUFFERED=1 nohup python3 -u train_sirst.py \
+--data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+--size $SIZE $( [ "$KP" = 1 ] && echo --keep_ratio_pad ) \
+--batch_size $BS --epochs $EPOCHS --model "$MODEL" --n_pos $N_POS \
+--use_freq_gate --freq_patch_size 8 \
+--exp_name "$EXP" >"$LOG_ROOT/train${TS}.log" 2>&1 &
+
+#nudt_use_radial_gate
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST"; \
+GPU=4; SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; MASK_SFX=""; N_POS=4; \
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; SFX_TAG=""; \
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_use_radial_gate_noshared_bs${BS}_e${EPOCHS}kp${KP}${SFX_TAG}${SPLIT_TAG}"; \
+TS=$(date +'%Y%m%d%H%M%S'); LOG_ROOT="outputs_sam_sirst_logs/${EXP}${TS}"; mkdir -p "$LOG_ROOT"; \
+CUDA_VISIBLE_DEVICES=${GPU} PYTHONUNBUFFERED=1 nohup python3 -u train_sirst.py \
+--data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+--size $SIZE $( [ "$KP" = 1 ] && echo --keep_ratio_pad ) \
+--batch_size $BS --epochs $EPOCHS --model "$MODEL" --n_pos $N_POS \
+--use_radial_gate --radial_bins 6 \
+--exp_name "$EXP" >"$LOG_ROOT/train${TS}.log" 2>&1 &
+
+
+#nudt_use_ffc
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST"; \
+GPU=6; SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; MASK_SFX=""; N_POS=4; \
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; SFX_TAG=""; \
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_use_ffc_bs${BS}_e${EPOCHS}kp${KP}${SFX_TAG}${SPLIT_TAG}"; \
+TS=$(date +'%Y%m%d%H%M%S'); LOG_ROOT="outputs_sam_sirst_logs/${EXP}${TS}"; mkdir -p "$LOG_ROOT"; \
+CUDA_VISIBLE_DEVICES=${GPU} PYTHONUNBUFFERED=1 nohup python3 -u train_sirst.py \
+--data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+--size $SIZE $( [ "$KP" = 1 ] && echo --keep_ratio_pad ) \
+--batch_size $BS --epochs $EPOCHS --model "$MODEL" --n_pos $N_POS \
+--use_ffc --ffc_kernel 1 --ffc_fft_norm ortho \
+--exp_name "$EXP" >"$LOG_ROOT/train${TS}.log" 2>&1 &
+
+#nudt_use_fftfomer
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST"; \
+GPU=2; SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; MASK_SFX=""; N_POS=4; \
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; SFX_TAG=""; \
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_use_FFTformer_bs${BS}_e${EPOCHS}kp${KP}${SFX_TAG}${SPLIT_TAG}"; \
+TS=$(date +'%Y%m%d%H%M%S'); LOG_ROOT="outputs_sam_sirst_logs/${EXP}${TS}"; mkdir -p "$LOG_ROOT"; \
+CUDA_VISIBLE_DEVICES=${GPU} PYTHONUNBUFFERED=1 nohup python3 -u train_sirst.py \
+--data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+--size $SIZE $( [ "$KP" = 1 ] && echo --keep_ratio_pad ) \
+--batch_size $BS --epochs $EPOCHS --model "$MODEL" --n_pos $N_POS \
+--use_fftformer --fftf_expansion 3.0 --fftf_patch_size 8 \
+--exp_name "$EXP" >"$LOG_ROOT/train${TS}.log" 2>&1 &
+
+IRSTD‑1k（注意哪张卡！！！什么预训练模型！！！)
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/IRSTD-1k"; \
+GPU=0; SIZE=256; BS=4; EPOCHS=500; MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; MASK_SFX=""; \
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; SFX_TAG=""; \
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_use_radial_gate_noshared_bs${BS}_e${EPOCHS}kp${KP}${SFX_TAG}${SPLIT_TAG}"; \
+TS=$(date +'%Y%m%d%H%M%S'); LOG_ROOT="outputs_sam_sirst_logs/${EXP}${TS}"; mkdir -p "$LOG_ROOT"; \
+CUDA_VISIBLE_DEVICES=${GPU} PYTHONUNBUFFERED=1 nohup python3 -u train_sirst.py \
+--data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+--size $SIZE $( [ "$KP" = 1 ] && echo --keep_ratio_pad ) \
+--batch_size $BS --epochs $EPOCHS --model "$MODEL" --n_pos $N_POS \
+--use_radial_gate --radial_bins 6 \
+--exp_name "$EXP">"$LOG_ROOT/train_${TS}.log" 2>&1 &
+
+
+#1k-HQ-SAM
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/IRSTD-1k"; \
+GPU=0; SIZE=512; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; MASK_SFX=""; \
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; SFX_TAG=""; \
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_use_HQ_param_bs${BS}_e${EPOCHS}kp${KP}${SFX_TAG}${SPLIT_TAG}"; \
+TS=$(date +'%Y%m%d%H%M%S'); LOG_ROOT="outputs_sam_sirst_logs/${EXP}${TS}"; mkdir -p "$LOG_ROOT"; \
+CUDA_VISIBLE_DEVICES=${GPU} PYTHONUNBUFFERED=1 nohup python3 -u train_sirst_hq_ubuntu.py \
+--data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+--size $SIZE $( [ "$KP" = 1 ] && echo --keep_ratio_pad ) \
+--batch_size $BS --epochs $EPOCHS --model "$MODEL"  \
+--hq_warmup_epochs 60 \
+--n_pos 12 --n_neg 24 --freeze_encoder_epochs 10 --lr_head 3e-4 \
+--boundary_prior_sampling --boundary_ratio 0.5 \
+--use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 \
+--val_thr_search --val_thr_min 0.35 --val_thr_max 0.55 --val_thr_step 0.05 \
+--init_from_baseline weights/efficient_sam_vitt.pt \
+--exp_name "$EXP">"$LOG_ROOT/train_${TS}.log" 2>&1 &
+
+#1k-HQ-SAM+radial #计算req_loss --freq_consistency_weight 0.05 --freq_consistency_bins 48 \
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/IRSTD-1k"; \
+GPU=0; SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; MASK_SFX=""; \
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; SFX_TAG=""; \
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_use_HQ_radial_edge_high_bs${BS}_e${EPOCHS}kp${KP}${SFX_TAG}${SPLIT_TAG}"; \
+TS=$(date +'%Y%m%d%H%M%S'); LOG_ROOT="outputs_sam_sirst_logs/${EXP}${TS}"; mkdir -p "$LOG_ROOT"; \
+CUDA_VISIBLE_DEVICES=${GPU} PYTHONUNBUFFERED=1 nohup python3 -u train_sirst_hq_ubuntu.py \
+--data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+--size $SIZE $( [ "$KP" = 1 ] && echo --keep_ratio_pad ) \
+--batch_size $BS --epochs $EPOCHS --model "$MODEL"  \
+--hq_warmup_epochs 60 \
+--n_pos 12 --n_neg 24 --freeze_encoder_epochs 10 --lr_head 3e-4 \
+--boundary_prior_sampling --boundary_ratio 0.5 \
+--use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 \
+--val_thr_search --val_thr_min 0.35 --val_thr_max 0.55 --val_thr_step 0.05 \
+--use_radial_gate_hq --rgate_loc both --freq_patch_size_hq 8 \
+--radial_bins_hq 6 --radial_channel_shared_hq --rgate_strength_enc 0.5 --rgate_strength_dec 0.5 \
+--rgate_edge_boost 0.5 --rgate_high_freq_thresh 0.6 \
+--init_from_baseline weights/efficient_sam_vitt.pt \
+--exp_name "$EXP">"$LOG_ROOT/train_${TS}.log" 2>&1 &
+
+#1k-HQ-SAM+radial+IRSAM数据集划分
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/IRSTD-1k"
+SPLIT_ROOT="/DATA20T/bip/cry/code/EfficientSAM-main/IRSAM_datasets/IRSTD-1k" # 假设你的 txt 在这里
+TRAIN_TXT="$SPLIT_ROOT/trainval.txt"
+VAL_TXT="$SPLIT_ROOT/test.txt"
+GPU=0; SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; MASK_SFX=""; \
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; SFX_TAG=""; \
+EXP="IRSAM_${DATASET}_model-${MODEL}_size${SIZE}_use_HQ_radial_bs${BS}_e${EPOCHS}kp${KP}${SFX_TAG}${SPLIT_TAG}"; \
+TS=$(date +'%Y%m%d%H%M%S'); LOG_ROOT="outputs_sam_sirst_logs/${EXP}${TS}"; mkdir -p "$LOG_ROOT"; \
+CUDA_VISIBLE_DEVICES=${GPU} PYTHONUNBUFFERED=1 nohup python3 -u train_sirst_hq_ubuntu.py \
+--data_root "$ROOT" --train_txt "$TRAIN_TXT" --val_txt "$VAL_TXT" \
+--size $SIZE $( [ "$KP" = 1 ] && echo --keep_ratio_pad ) \
+--batch_size $BS --epochs $EPOCHS --model "$MODEL"  \
+--hq_warmup_epochs 60 \
+--n_pos 12 --n_neg 24 --freeze_encoder_epochs 10 --lr_head 3e-4 \
+--boundary_prior_sampling --boundary_ratio 0.5 \
+--use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 \
+--val_thr_search --val_thr_min 0.35 --val_thr_max 0.55 --val_thr_step 0.05 \
+--use_radial_gate_hq --rgate_loc both --freq_patch_size_hq 8 \
+--radial_bins_hq 6 --radial_channel_shared_hq --rgate_strength_enc 0.5 --rgate_strength_dec 0.5 \
+--init_from_baseline weights/efficient_sam_vitt.pt \
+--exp_name "$EXP">"$LOG_ROOT/train_${TS}.log" 2>&1 &
+
+
+IRSTD_1k_use_freq_gate
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/IRSTD-1k"; \
+GPU=3; SIZE=256; BS=2; EPOCHS=500; MODEL="vits"; KP=1; TRAIN_DIR="50_50"; MASK_SFX=""; \
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; SFX_TAG=""; \
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_use_freq_gate_bs${BS}e${EPOCHS}kp${KP}${SFX_TAG}${SPLIT_TAG}"; \
+TS=$(date +'%Y%m%d%H%M%S'); LOG_ROOT="outputs_sam_sirst_logs/${EXP}${TS}"; mkdir -p "$LOG_ROOT"; \
+CUDA_VISIBLE_DEVICES=${GPU} PYTHONUNBUFFERED=1 nohup python3 -u train_sirst.py \
+--data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+--size $SIZE $( [ "$KP" = 1 ] && echo --keep_ratio_pad ) \
+--batch_size $BS --epochs $EPOCHS --model "$MODEL"  \
+--use_freq_gate --freq_patch_size 8 \
+--exp_name "$EXP">"$LOG_ROOT/train_${TS}.log" 2>&1 &
+
+
+IRSTD_1k_use_ffc
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/IRSTD-1k"; \
+GPU=2; SIZE=256; BS=4; EPOCHS=500; MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; MASK_SFX=""; \
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; SFX_TAG=""; \
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_use_ffc_bs${BS}e${EPOCHS}kp${KP}${SFX_TAG}${SPLIT_TAG}"; \
+TS=$(date +'%Y%m%d%H%M%S'); LOG_ROOT="outputs_sam_sirst_logs/${EXP}${TS}"; mkdir -p "$LOG_ROOT"; \
+CUDA_VISIBLE_DEVICES=${GPU} PYTHONUNBUFFERED=1 nohup python3 -u train_sirst.py \
+--data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+--size $SIZE $( [ "$KP" = 1 ] && echo --keep_ratio_pad ) \
+--batch_size $BS --epochs $EPOCHS --model "$MODEL"  \
+--use_ffc --ffc_kernel 1 --ffc_fft_norm ortho \
+--exp_name "$EXP">"$LOG_ROOT/train_${TS}.log" 2>&1 &
+
+IRSTD_1k_use_fftformer
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/IRSTD-1k"; \
+GPU=3; SIZE=256; BS=4; EPOCHS=500; MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; MASK_SFX=""; \
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; SFX_TAG=""; \
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_use_FFTformer_bs${BS}e${EPOCHS}kp${KP}${SFX_TAG}${SPLIT_TAG}"; \
+TS=$(date +'%Y%m%d%H%M%S'); LOG_ROOT="outputs_sam_sirst_logs/${EXP}${TS}"; mkdir -p "$LOG_ROOT"; \
+CUDA_VISIBLE_DEVICES=${GPU} PYTHONUNBUFFERED=1 nohup python3 -u train_sirst.py \
+--data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+--size $SIZE $( [ "$KP" = 1 ] && echo --keep_ratio_pad ) \
+--batch_size $BS --epochs $EPOCHS --model "$MODEL"  \
+--use_fftformer --fftf_expansion 3.0 --fftf_patch_size 8 \
+--exp_name "$EXP">"$LOG_ROOT/train_${TS}.log" 2>&1 &
+
+NUAA‑SIRST（（注意哪张卡！！！什么预训练模型！！！)
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUAA-SIRST"; \
+GPU=3; SIZE=256; BS=4; EPOCHS=500; MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; MASK_SFX="_pixels0"; \
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; SFX_TAG="msfx${MASK_SFX#}"; \
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_use_radial_gate_noshared_bs${BS}_e${EPOCHS}kp${KP}${SFX_TAG}${SPLIT_TAG}"; \
+TS=$(date +'%Y%m%d%H%M%S'); LOG_ROOT="outputs_sam_sirst_logs/${EXP}${TS}"; mkdir -p "$LOG_ROOT"; \
+CUDA_VISIBLE_DEVICES=${GPU} PYTHONUNBUFFERED=1 nohup python3 -u train_sirst.py \
+--data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+--size $SIZE $( [ "$KP" = 1 ] && echo --keep_ratio_pad ) \
+--batch_size $BS --epochs $EPOCHS --model "$MODEL" \
+--use_radial_gate --radial_bins 6 \
+--mask_suffix "$MASK_SFX" \
+--exp_name "$EXP" > "$LOG_ROOT/train_${TS}.log" 2>&1 &
+
+
+#NUAA_HQ_SAM
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUAA-SIRST"; \
+GPU=1; SIZE=512; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; MASK_SFX="_pixels0"; \
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; SFX_TAG="msfx${MASK_SFX#}"; \
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_use_HQ_param_bs${BS}_e${EPOCHS}kp${KP}${SFX_TAG}${SPLIT_TAG}"; \
+TS=$(date +'%Y%m%d%H%M%S'); LOG_ROOT="outputs_sam_sirst_logs/${EXP}${TS}"; mkdir -p "$LOG_ROOT"; \
+CUDA_VISIBLE_DEVICES=${GPU} PYTHONUNBUFFERED=1 nohup python3 -u train_sirst_hq_ubuntu.py \
+--data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+--size $SIZE $( [ "$KP" = 1 ] && echo --keep_ratio_pad ) \
+--batch_size $BS --epochs $EPOCHS --model "$MODEL" \
+--init_from_baseline weights/efficient_sam_vitt.pt --hq_warmup_epochs 60 \
+--n_pos 12 --n_neg 24 --freeze_encoder_epochs 10 --lr_head 3e-4 \
+--boundary_prior_sampling --boundary_ratio 0.5 \
+--use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 \
+--val_thr_search --val_thr_min 0.40 --val_thr_max 0.55 --val_thr_step 0.05 \
+--mask_suffix "$MASK_SFX" \
+--exp_name "$EXP" > "$LOG_ROOT/train_${TS}.log" 2>&1 &
+
+
+#NUAA_HQ_SAM+radial # 计算freq_loss --freq_consistency_weight 0.05 --freq_consistency_bins 48 \
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUAA-SIRST"; \
+GPU=3; SIZE=256; BS=4; EPOCHS=500; MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; MASK_SFX="_pixels0"; \
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; SFX_TAG="msfx${MASK_SFX#}"; \
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_use_HQ_radial_edge_high_bs${BS}_e${EPOCHS}kp${KP}${SFX_TAG}${SPLIT_TAG}"; \
+TS=$(date +'%Y%m%d%H%M%S'); LOG_ROOT="outputs_sam_sirst_logs/${EXP}${TS}"; mkdir -p "$LOG_ROOT"; \
+CUDA_VISIBLE_DEVICES=${GPU} PYTHONUNBUFFERED=1 nohup python3 -u train_sirst_hq_ubuntu.py \
+--data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+--size $SIZE $( [ "$KP" = 1 ] && echo --keep_ratio_pad ) \
+--batch_size $BS --epochs $EPOCHS --model "$MODEL" \
+--init_from_baseline weights/efficient_sam_vitt.pt --hq_warmup_epochs 60 \
+--n_pos 12 --n_neg 24 --freeze_encoder_epochs 10 --lr_head 3e-4 \
+--boundary_prior_sampling --boundary_ratio 0.5 \
+--use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 \
+--val_thr_search --val_thr_min 0.40 --val_thr_max 0.55 --val_thr_step 0.05 \
+--use_radial_gate_hq --rgate_loc both --freq_patch_size_hq 8 \
+--radial_bins_hq 6 --radial_channel_shared_hq --rgate_strength_enc 0.5 --rgate_strength_dec 0.5 \
+--rgate_edge_boost 0.5 --rgate_high_freq_thresh 0.6 \
+--mask_suffix "$MASK_SFX" \
+--exp_name "$EXP" > "$LOG_ROOT/train_${TS}.log" 2>&1 &
+
+#NUAA_HQ_SAM+radial+irsam数据集划分
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUAA-SIRST"; \
+SPLIT_ROOT="/DATA20T/bip/cry/code/EfficientSAM-main/IRSAM_datasets/Sirstv2_512" # 假设你的 txt 在这里
+TRAIN_TXT="$SPLIT_ROOT/trainval.txt"
+VAL_TXT="$SPLIT_ROOT/test.txt"
+GPU=3; SIZE=256; BS=4; EPOCHS=500; MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; MASK_SFX="_pixels0"; \
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; SFX_TAG="msfx${MASK_SFX#}"; \
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_use_HQ_radial_bs${BS}_e${EPOCHS}kp${KP}${SFX_TAG}${SPLIT_TAG}"; \
+TS=$(date +'%Y%m%d%H%M%S'); LOG_ROOT="outputs_sam_sirst_logs/${EXP}${TS}"; mkdir -p "$LOG_ROOT"; \
+CUDA_VISIBLE_DEVICES=${GPU} PYTHONUNBUFFERED=1 nohup python3 -u train_sirst_hq_ubuntu.py \
+--data_root "$ROOT" --train_txt "$TRAIN_TXT" --val_txt "$VAL_TXT" \
+--size $SIZE $( [ "$KP" = 1 ] && echo --keep_ratio_pad ) \
+--batch_size $BS --epochs $EPOCHS --model "$MODEL" \
+--init_from_baseline weights/efficient_sam_vitt.pt --hq_warmup_epochs 60 \
+--n_pos 12 --n_neg 24 --freeze_encoder_epochs 10 --lr_head 3e-4 \
+--boundary_prior_sampling --boundary_ratio 0.5 \
+--use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 \
+--val_thr_search --val_thr_min 0.40 --val_thr_max 0.55 --val_thr_step 0.05 \
+--use_radial_gate_hq --rgate_loc both --freq_patch_size_hq 8 \
+--radial_bins_hq 6 --radial_channel_shared_hq --rgate_strength_enc 0.5 --rgate_strength_dec 0.5 \
+--mask_suffix "$MASK_SFX" \
+--exp_name "$EXP" > "$LOG_ROOT/train_${TS}.log" 2>&1 &
+
+NUAA_use_freq_gate
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUAA-SIRST"; \
+GPU=1; SIZE=256; BS=2; EPOCHS=500; MODEL="vits"; KP=1; TRAIN_DIR="50_50"; MASK_SFX="_pixels0"; \
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; SFX_TAG="msfx${MASK_SFX#}"; \
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_use_freq_gate_bs${BS}_e${EPOCHS}kp${KP}${SFX_TAG}${SPLIT_TAG}"; \
+TS=$(date +'%Y%m%d%H%M%S'); LOG_ROOT="outputs_sam_sirst_logs/${EXP}${TS}"; mkdir -p "$LOG_ROOT"; \
+CUDA_VISIBLE_DEVICES=${GPU} PYTHONUNBUFFERED=1 nohup python3 -u train_sirst.py \
+--data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+--size $SIZE $( [ "$KP" = 1 ] && echo --keep_ratio_pad ) \
+--batch_size $BS --epochs $EPOCHS --model "$MODEL" \
+--use_freq_gate --freq_patch_size 8 \
+--mask_suffix "$MASK_SFX" \
+--exp_name "$EXP" > "$LOG_ROOT/train_${TS}.log" 2>&1 &
+
+
+NUAA_use_ffc
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUAA-SIRST"; \
+GPU=3; SIZE=256; BS=4; EPOCHS=500; MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; MASK_SFX="_pixels0"; \
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; SFX_TAG="msfx${MASK_SFX#}"; \
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_use_ffc_bs${BS}_e${EPOCHS}kp${KP}${SFX_TAG}${SPLIT_TAG}"; \
+TS=$(date +'%Y%m%d%H%M%S'); LOG_ROOT="outputs_sam_sirst_logs/${EXP}${TS}"; mkdir -p "$LOG_ROOT"; \
+CUDA_VISIBLE_DEVICES=${GPU} PYTHONUNBUFFERED=1 nohup python3 -u train_sirst.py \
+--data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+--size $SIZE $( [ "$KP" = 1 ] && echo --keep_ratio_pad ) \
+--batch_size $BS --epochs $EPOCHS --model "$MODEL" \
+--use_ffc --ffc_kernel 1 --ffc_fft_norm ortho \
+--mask_suffix "$MASK_SFX" \
+--exp_name "$EXP" > "$LOG_ROOT/train_${TS}.log" 2>&1 &
+
+NUAA_use_FFTfORMER
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUAA-SIRST"; \
+GPU=3; SIZE=256; BS=4; EPOCHS=500; MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; MASK_SFX="_pixels0"; \
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; SFX_TAG="msfx${MASK_SFX#}"; \
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_use_FFTformer_bs${BS}_e${EPOCHS}kp${KP}${SFX_TAG}${SPLIT_TAG}"; \
+TS=$(date +'%Y%m%d%H%M%S'); LOG_ROOT="outputs_sam_sirst_logs/${EXP}${TS}"; mkdir -p "$LOG_ROOT"; \
+CUDA_VISIBLE_DEVICES=${GPU} PYTHONUNBUFFERED=1 nohup python3 -u train_sirst.py \
+--data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+--size $SIZE $( [ "$KP" = 1 ] && echo --keep_ratio_pad ) \
+--batch_size $BS --epochs $EPOCHS --model "$MODEL" \
+--use_fftformer --fftf_expansion 3.0 --fftf_patch_size 8 \
+--mask_suffix "$MASK_SFX" \
+--exp_name "$EXP" > "$LOG_ROOT/train_${TS}.log" 2>&1 &
+
+!!!查看日志
+tail -f "$LOG_ROOT"/*.log
+
+
+
+NUDT-SIRST（GPU ，模型 ,数据集路径）
+5090D
+$env:PYTHONUNBUFFERED='1'; $GPU=0; $env:CUDA_VISIBLE_DEVICES="$GPU"; $ROOT="E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST"; $SIZE=256; $BS=4; $EPOCHS=1000; $MODEL="vitt"; $KP=1; $TRAIN_DIR="50_50"; $DATASET=Split-Path $ROOT -Leaf; $SPLIT_TAG="_split-$TRAIN_DIR"; $EXP="$($DATASET)_model-$MODEL" + "_size$SIZE" + "_use_fftformer_bs$BS" + "_e$EPOCHS" + "_kp$KP$SPLIT_TAG"; $TS=Get-Date -Format 'yyyyMMdd_HHmmss'; $LOG_ROOT="outputs_sam_sirst_logs\$($EXP)_$TS"; New-Item -ItemType Directory -Force -Path $LOG_ROOT | Out-Null; $kpFlag = if ($KP -eq 1) {"--keep_ratio_pad"} else {""}; python -u train_sirst.py --data_root $ROOT --train_txt "$TRAIN_DIR\train.txt" --val_txt "$TRAIN_DIR\test.txt" --size $SIZE $kpFlag --batch_size $BS --epochs $EPOCHS --model $MODEL --use_fftformer --fftf_expansion 3.0 --fftf_patch_size 8 --exp_name "$EXP" 2>&1 | Tee-Object -FilePath "$LOG_ROOT\train_$TS.log"
+3090ti
+$env:PYTHONUNBUFFERED='1'; $GPU=0; $env:CUDA_VISIBLE_DEVICES="$GPU"; $ROOT="D:\cry\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST"; $SIZE=256; $BS=4; $EPOCHS=1000; $MODEL="vitt"; $KP=1; $TRAIN_DIR="50_50"; $DATASET=Split-Path $ROOT -Leaf; $SPLIT_TAG="_split-$TRAIN_DIR"; $EXP="$($DATASET)_model-$MODEL" + "_size$SIZE" + "use_radial_gate_noshared_bs$BS" + "_e$EPOCHS" + "_kp$KP$SPLIT_TAG"; $TS=Get-Date -Format 'yyyyMMdd_HHmmss'; $LOG_ROOT="outputs_sam_sirst_logs\$($EXP)_$TS"; New-Item -ItemType Directory -Force -Path $LOG_ROOT | Out-Null; $kpFlag = if ($KP -eq 1) {"--keep_ratio_pad"} else {""}; python -u train_sirst.py --data_root $ROOT --train_txt "$TRAIN_DIR\train.txt" --val_txt "$TRAIN_DIR\test.txt" --size $SIZE $kpFlag --batch_size $BS --epochs $EPOCHS --model $MODEL --use_radial_gate --radial_bins 6 --exp_name "$EXP" 2>&1 | Tee-Object -FilePath "$LOG_ROOT\train_$TS.log"
+
+
+
+
+IRSTD-1k（GPU 1，模型 vits）
+$env:PYTHONUNBUFFERED='1'; $GPU=0; $env:CUDA_VISIBLE_DEVICES="$GPU"; $ROOT="D:\cry\SIRST-5K-main\SIRST-5K-main\dataset\IRSTD-1k"; $SIZE=256; $BS=4; $EPOCHS=500; $MODEL="vitt"; $KP=1; $TRAIN_DIR="50_50"; $DATASET=Split-Path $ROOT -Leaf; $SPLIT_TAG="_split-$TRAIN_DIR"; $EXP="$($DATASET)_model-$MODEL" + "_size$SIZE" + "use_radial_gate_noshared_bs$BS" + "_e$EPOCHS" + "_kp$KP$SPLIT_TAG"; $TS=Get-Date -Format 'yyyyMMdd_HHmmss'; $LOG_ROOT="outputs_sam_sirst_logs\$($EXP)_$TS"; New-Item -ItemType Directory -Force -Path $LOG_ROOT | Out-Null; $kpFlag = if ($KP -eq 1) {"--keep_ratio_pad"} else {""}; python -u train_sirst.py --data_root $ROOT --train_txt "$TRAIN_DIR\train.txt" --val_txt "$TRAIN_DIR\test.txt" --size $SIZE $kpFlag --batch_size $BS --epochs $EPOCHS --model $MODEL --use_radial_gate --radial_bins 6 --exp_name "$EXP" 2>&1 | Tee-Object -FilePath "$LOG_ROOT\train_$TS.log"
+
+NUAA-SIRST（GPU 3，模型 vits，mask 后缀 _pixels0）
+$env:PYTHONUNBUFFERED='1'; $GPU=0; $env:CUDA_VISIBLE_DEVICES="$GPU"; $ROOT="E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUAA-SIRST"; $SIZE=256; $BS=2; $EPOCHS=1500; $MODEL="vits"; $KP=1; $TRAIN_DIR="50_50"; $MASK_SFX="_pixels0"; $DATASET=Split-Path $ROOT -Leaf; $SPLIT_TAG= if ($TRAIN_DIR) { "_split-$TRAIN_DIR" } else { "" }; $SFX_TAG= if ($MASK_SFX) { "msfx$($MASK_SFX.TrimStart(''))" } else { "" }; $EXP="$($DATASET)_model-$MODEL" + "_size$SIZE" + "_bs$BS" + "e$EPOCHS" + "kp$KP$SFX_TAG$SPLIT_TAG"; $TS=Get-Date -Format 'yyyyMMdd_HHmmss'; $LOG_ROOT="outputs_sam_sirst_logs\$($EXP)$TS"; New-Item -ItemType Directory -Force -Path $LOG_ROOT | Out-Null; $ARGS=@("--data_root",$ROOT,"--train_txt","$TRAIN_DIR\train.txt","--val_txt","$TRAIN_DIR\test.txt","--size",$SIZE,"--batch_size",$BS,"--epochs",$EPOCHS,"--model",$MODEL,"--exp_name",$EXP); if($KP -eq 1){$ARGS+="--keep_ratio_pad"}; if($MASK_SFX){$ARGS+=@("--mask_suffix",$MASK_SFX)}; python -u train_sirst.py @ARGS 2>&1 | Tee-Object -FilePath "$LOG_ROOT\train$TS.log"
+
+NUDT-SIRST（GPU ，模型 ,数据集路径）
+5090D HQ-SAM
+$env:PYTHONUNBUFFERED='1'; $GPU=0; $env:CUDA_VISIBLE_DEVICES="$GPU"; $ROOT="E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST"; $SIZE=256; $BS=4; $EPOCHS=1000; $MODEL="vitt"; $KP=1; $TRAIN_DIR="50_50"; $DATASET=Split-Path $ROOT -Leaf; $SPLIT_TAG="_split-$TRAIN_DIR"; $EXP="$($DATASET)_model-$MODEL" + "_size$SIZE" + "_use_HQ_bs$BS" + "_e$EPOCHS" + "_kp$KP$SPLIT_TAG"; $TS=Get-Date -Format 'yyyyMMdd_HHmmss'; $LOG_ROOT="outputs_sam_sirst_logs\$($EXP)_$TS"; New-Item -ItemType Directory -Force -Path $LOG_ROOT | Out-Null; $kpFlag = if ($KP -eq 1) {"--keep_ratio_pad"} else {""}; python -u train_sirst_hq.py --data_root $ROOT --train_txt "$TRAIN_DIR\train.txt" --val_txt "$TRAIN_DIR\test.txt" --size $SIZE $kpFlag --batch_size $BS --epochs $EPOCHS --model $MODEL --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" 2>&1 | Tee-Object -FilePath "$LOG_ROOT\train_$TS.log"
+3090TI HQ-SAM
+$env:PYTHONUNBUFFERED='1'; $GPU=0; $env:CUDA_VISIBLE_DEVICES="$GPU"; $ROOT="D:\cry\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST"; $SIZE=256; $BS=4; $EPOCHS=1000; $MODEL="vitt"; $KP=1; $TRAIN_DIR="50_50"; $DATASET=Split-Path $ROOT -Leaf; $SPLIT_TAG="_split-$TRAIN_DIR"; $EXP="$($DATASET)_model-$MODEL" + "_size$SIZE" + "use_hq2_$BS" + "_e$EPOCHS" + "_kp$KP$SPLIT_TAG"; $TS=Get-Date -Format 'yyyyMMdd_HHmmss'; $LOG_ROOT="outputs_sam_sirst_logs\$($EXP)_$TS"; New-Item -ItemType Directory -Force -Path $LOG_ROOT | Out-Null; $kpFlag = if ($KP -eq 1) {"--keep_ratio_pad"} else {""}; python -u train_sirst_hq.py --data_root $ROOT --train_txt "$TRAIN_DIR\train.txt" --val_txt "$TRAIN_DIR\test.txt" --size $SIZE $kpFlag --batch_size $BS --epochs $EPOCHS --model $MODEL --hq_token_only --exp_name "$EXP" 2>&1 | Tee-Object -FilePath "$LOG_ROOT\train_$TS.log"
+
+
+NUDT-SIRST（GPU ，模型 ,数据集路径）
+5090D HQ-SAM+radial
+$env:PYTHONUNBUFFERED='1'; $GPU=0; $env:CUDA_VISIBLE_DEVICES="$GPU"; $ROOT="E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST"; `
+$SIZE=256; $BS=4; $EPOCHS=1000; $MODEL="vitt"; $KP=1; $TRAIN_DIR="50_50"; $DATASET=Split-Path $ROOT -Leaf; `
+$SPLIT_TAG="_split-$TRAIN_DIR"; $EXP="$($DATASET)_model-$MODEL" + "_size$SIZE" + "_use_HQ_radial_encoder_bs$BS" + "_e$EPOCHS" + "_kp$KP$SPLIT_TAG"; `
+$TS=Get-Date -Format 'yyyyMMdd_HHmmss'; $LOG_ROOT="outputs_sam_sirst_logs\$($EXP)_$TS"; New-Item -ItemType Directory -Force -Path $LOG_ROOT | `
+Out-Null; $kpFlag = if ($KP -eq 1) {"--keep_ratio_pad"} else {""}; python -u train_sirst_hq.py --data_root $ROOT --train_txt "$TRAIN_DIR\train.txt" `
+--val_txt "$TRAIN_DIR\test.txt" --size $SIZE $kpFlag --batch_size $BS --epochs $EPOCHS --model $MODEL --hq_warmup_epochs 30 --boundary_prior_sampling `
+--boundary_ratio 0.5 --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search --use_radial_gate_hq --rgate_loc encoder `
+--freq_patch_size_hq 8 --radial_bins_hq 6 --radial_channel_shared_hq --rgate_strength_enc 0.5 --rgate_strength_dec 0.5 `
+--init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" 2>&1 | Tee-Object -FilePath "$LOG_ROOT\train_$TS.log"
+3090TI 
+#NUDT_HQ-SAM+radial
+$env:PYTHONUNBUFFERED='1'; $GPU=0; $env:CUDA_VISIBLE_DEVICES="$GPU"; $ROOT="D:\cry\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST"; $SIZE=512; $BS=4; $EPOCHS=1000; $MODEL="vitt"; $KP=1; $TRAIN_DIR="50_50"; $DATASET=Split-Path $ROOT -Leaf; $SPLIT_TAG="_split-$TRAIN_DIR"; $EXP="$($DATASET)_model-$MODEL" + "_size$SIZE" + "use_hq_radial_bs$BS" + "_e$EPOCHS" + "_kp$KP$SPLIT_TAG"; $TS=Get-Date -Format 'yyyyMMdd_HHmmss'; $LOG_ROOT="outputs_sam_sirst_logs\$($EXP)_$TS"; New-Item -ItemType Directory -Force -Path $LOG_ROOT | Out-Null; $kpFlag = if ($KP -eq 1) {"--keep_ratio_pad"} else {""}; python -u train_sirst_hq.py --data_root $ROOT --train_txt "$TRAIN_DIR\train.txt" --val_txt "$TRAIN_DIR\test.txt" --size $SIZE $kpFlag --batch_size $BS --epochs $EPOCHS --model $MODEL --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search --use_radial_gate_hq --rgate_loc encoder --freq_patch_size_hq 8 --radial_bins_hq 6 --radial_channel_shared_hq --rgate_strength_enc 0.5 --rgate_strength_dec 0.5 --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" 2>&1 | Tee-Object -FilePath "$LOG_ROOT\train_$TS.log"
+#1K_HQ-SAM+radia
+$env:PYTHONUNBUFFERED='1'; $GPU=0; $env:CUDA_VISIBLE_DEVICES="$GPU"; $ROOT="D:\cry\SIRST-5K-main\SIRST-5K-main\dataset\IRSTD-1k"; $SIZE=512; $BS=4; $EPOCHS=1000; $MODEL="vitt"; $KP=1; $TRAIN_DIR="50_50"; $DATASET=Split-Path $ROOT -Leaf; $SPLIT_TAG="_split-$TRAIN_DIR"; $EXP="$($DATASET)_model-$MODEL" + "_size$SIZE" + "use_hq_radial_bs$BS" + "_e$EPOCHS" + "_kp$KP$SPLIT_TAG"; $TS=Get-Date -Format 'yyyyMMdd_HHmmss'; $LOG_ROOT="outputs_sam_sirst_logs\$($EXP)_$TS"; New-Item -ItemType Directory -Force -Path $LOG_ROOT | Out-Null; $kpFlag = if ($KP -eq 1) {"--keep_ratio_pad"} else {""}; python -u train_sirst_hq.py --data_root $ROOT --train_txt "$TRAIN_DIR\train.txt" --val_txt "$TRAIN_DIR\test.txt" --size $SIZE $kpFlag --batch_size $BS --epochs $EPOCHS --model $MODEL --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search --use_radial_gate_hq --rgate_loc both --freq_patch_size_hq 8 --radial_bins_hq 6 --radial_channel_shared_hq --rgate_strength_enc 0.5 --rgate_strength_dec 0.5 --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" 2>&1 | Tee-Object -FilePath "$LOG_ROOT\train_$TS.log"
+#NUAA_HQ-SAM+radia
+$env:PYTHONUNBUFFERED='1'; $GPU=0; $env:CUDA_VISIBLE_DEVICES="$GPU"; $ROOT="D:\cry\SIRST-5K-main\SIRST-5K-main\dataset\NUAA-SIRST"; $MASK_SFX="_pixels0"; `
+$SIZE=512; $BS=4; $EPOCHS=1000; $MODEL="vitt"; $KP=1; $TRAIN_DIR="50_50"; $DATASET=Split-Path $ROOT -Leaf; $SPLIT_TAG="_split-$TRAIN_DIR"; `
+$EXP="$($DATASET)_model-$MODEL" + "_size$SIZE" + "use_hq_radial_bs$BS" + "_e$EPOCHS" + "_kp$KP$SPLIT_TAG"; $TS=Get-Date -Format 'yyyyMMdd_HHmmss'; `
+$LOG_ROOT="outputs_sam_sirst_logs\$($EXP)_$TS"; New-Item -ItemType Directory -Force -Path $LOG_ROOT | Out-Null; $kpFlag = if ($KP -eq 1) {"--keep_ratio_pad"} else {""}; `
+python -u train_sirst_hq.py --data_root $ROOT --train_txt "$TRAIN_DIR\train.txt" --val_txt "$TRAIN_DIR\test.txt" `
+--size $SIZE $kpFlag --batch_size $BS --epochs $EPOCHS --model $MODEL --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 `
+--use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search --use_radial_gate_hq --rgate_loc both --freq_patch_size_hq 8 `
+--radial_bins_hq 6 --radial_channel_shared_hq --rgate_strength_enc 0.5 --rgate_strength_dec 0.5 --init_from_baseline weights/efficient_sam_vitt.pt `
+--mask_suffix "$MASK_SFX"  --exp_name "$EXP" 2>&1 | Tee-Object -FilePath "$LOG_ROOT\train_$TS.log"
+
+-----各向异性光谱门控（ASG）训练脚本
+$env:PYTHONUNBUFFERED='1'; $GPU=0; $env:CUDA_VISIBLE_DEVICES="$GPU"; `
+$ROOT="E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST"; `
+$SIZE=256; $BS=2; $EPOCHS=1000; $MODEL="vitt"; $KP=1; $TRAIN_DIR="50_50"; `
+$DATASET=Split-Path $ROOT -Leaf; $SPLIT_TAG="_split-$TRAIN_DIR"; `
+$EXP="$($DATASET)_model-$MODEL" + "_size$SIZE" + "_use_HQ_asg2_bs$BS" + "_e$EPOCHS" + "_kp$KP$SPLIT_TAG"; `
+$TS=Get-Date -Format 'yyyyMMdd_HHmmss'; $LOG_ROOT="outputs_sam_sirst_logs\$($EXP)_$TS"; `
+New-Item -ItemType Directory -Force -Path $LOG_ROOT | Out-Null; `
+$kpFlag = if ($KP -eq 1) {"--keep_ratio_pad"} else {""}; `
+python -u train_sirst_hq.py --data_root $ROOT --train_txt "$TRAIN_DIR\train.txt" --val_txt "$TRAIN_DIR\test.txt" `
+--size $SIZE $kpFlag --batch_size $BS --epochs $EPOCHS --model $MODEL `
+--hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 `
+--use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search `
+--use_asg_hq --asg_variant asg2 --asg_loc both --asg_radial_bins 64 --asg_angular_bins 128 `
+--asg_strength_enc 1.0 --asg_strength_dec 1.0 `
+--init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" `
+2>&1 | Tee-Object -FilePath "$LOG_ROOT\train_$TS.log"
+
+-----各向异性光谱门控（ASG）训练脚本-unbuntu服务器训练脚本
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=1;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_use_HQ_asg2_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+TS=$(date +%Y%m%d_%H%M%S); LOG_ROOT="outputs_sam_sirst_logs/${EXP}_${TS}"; mkdir -p "$LOG_ROOT";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search \
+  --use_asg_hq --asg_variant asg2 --asg_loc both --asg_radial_bins 64 --asg_angular_bins 128 \
+  --asg_strength_enc 1.0 --asg_strength_dec 1.0 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
+  2>&1 | tee "$LOG_ROOT/train_${TS}.log"' >/dev/null 2>&1 &
+
+-----各向异性光谱门控（ASG）训练脚本-unbuntu服务器训练脚本--参数调优版本
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=3;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_ASG2_r48_t96_enc0p6_dec0p6bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search \
+  --use_asg_hq --asg_variant asg2 --asg_loc both \
+  --asg_radial_bins 48 --asg_angular_bins 96 --asg_strength_enc 0.6 --asg_strength_dec 0.6 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP"
+' >/dev/null 2>&1 &
+
+
+-----相位引导的自动提示机制（PGAP）训练脚本-windows训练脚本
+$env:PYTHONUNBUFFERED='1'; $GPU=0; $env:CUDA_VISIBLE_DEVICES="$GPU";
+$ROOT="E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST";
+$SIZE=256; $BS=4; $EPOCHS=1000; $MODEL="vitt"; $KP=1; $TRAIN_DIR="50_50";
+$DATASET=Split-Path $ROOT -Leaf; $SPLIT_TAG="_split-$TRAIN_DIR";
+$EXP="$($DATASET)_model-$MODEL" + "_size$SIZE" + "_HQ_PGAP_bs$BS" + "_e$EPOCHS" + "_kp$KP$SPLIT_TAG";
+$kpFlag = if ($KP -eq 1) {"--keep_ratio_pad"} else {""};
+python -u train_sirst_hq.py `
+  --data_root $ROOT --train_txt "$TRAIN_DIR\train.txt" --val_txt "$TRAIN_DIR\test.txt" `
+  --size $SIZE $kpFlag --batch_size $BS --epochs $EPOCHS --model $MODEL `
+  --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 `
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search `
+  --use_pgap --pgap_top_k 5 --pgap_min_dist 10 --pgap_saliency_thr 0.1 `
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 `
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP"
+
+-----相位引导的自动提示机制（PGAP）训练脚本-ubuntu训练脚本
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=0;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_PGAP_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search \
+  --use_pgap --pgap_top_k 5 --pgap_min_dist 10 --pgap_saliency_thr 0.1 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
+  >/dev/null 2>&1 &
+
+-----相位引导的自动提示机制（PGAP）+启用动态 top‑k + 加窗/边界/动态阈值训练脚本-ubuntu训练脚本
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=3;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_PGAP_dynTopk_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search \
+  --use_pgap --pgap_top_k 5 --pgap_min_top_k 1 \
+  --pgap_dyn_quantile 0.9 --pgap_dyn_mode max \
+  --pgap_border_width 12 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
+  >/dev/null 2>&1 &'
+
+-----相位引导的自动提示机制（PGAP）+固定 top‑k + 加窗/边界/动态阈值训练脚本-ubuntu训练脚本
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=4;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_PGAP_fixTopk_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search \
+  --use_pgap --pgap_top_k 5 --pgap_no_dynamic_topk \
+  --pgap_dyn_quantile 0.9 --pgap_dyn_mode max \
+  --pgap_border_width 12 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
+  >/dev/null 2>&1 &'
+
+-----相位引导的自动提示机制（PGAP）+固定 top‑k + 加窗/边界/动态阈值+keep_ratio_pad =false训练脚本-ubuntu训练脚本
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=0;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=0; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_PGAP_fixTopk_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search \
+  --use_pgap --pgap_top_k 5 --pgap_no_dynamic_topk \
+  --pgap_dyn_quantile 0.9 --pgap_dyn_mode max \
+  --pgap_border_width 12 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
+  >/dev/null 2>&1 &'
+
+-----相位引导的自动提示机制（PGAP）+固定 top‑k + 加窗/边界/动态阈值+keep_ratio_pad =false+
+----去除黑边训练脚本-ubuntu训练脚本
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=4;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=0; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_PGAP_fixTopk_noborder_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search \
+  --use_pgap --pgap_top_k 5 --pgap_no_dynamic_topk \
+  --pgap_dyn_quantile 0.9 --pgap_dyn_mode max \
+  --pgap_border_width 0 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
+  >/dev/null 2>&1 &'
+
+-----相位引导的自动提示机制（PGAP）+固定 top‑k + 加窗/边界/动态阈值+keep_ratio_pad =false训练脚本-windows训练脚本
+$env:PYTHONUNBUFFERED=1
+$env:CUDA_VISIBLE_DEVICES="0"
+$ROOT="E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST"
+$SIZE=256; $BS=4; $EPOCHS=1000; $MODEL="vitt"; $KP=0; $TRAIN_DIR="50_50"
+$DATASET=(Split-Path $ROOT -Leaf); $SPLIT_TAG="_split-$TRAIN_DIR"
+$EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_PGAP_fixTopk_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}"
+$kpFlag = if ($KP -eq 1) { "--keep_ratio_pad" } else { "" }
+$TS = Get-Date -Format "yyyyMMdd_HHmmss"
+$LOG_ROOT = "outputs_sam_sirst_logs\${EXP}_$TS"; New-Item -ItemType Directory -Force -Path $LOG_ROOT | Out-Null
+$LOG_FILE = "$LOG_ROOT\train_$TS.log"
+python -u train_sirst_hq_ubuntu.py `
+  --data_root "$ROOT" --train_txt "$TRAIN_DIR\train.txt" --val_txt "$TRAIN_DIR\test.txt" `
+  --size $SIZE $kpFlag --batch_size $BS --epochs $EPOCHS --model $MODEL `
+  --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 `
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search `
+  --use_pgap --pgap_top_k 5 --pgap_no_dynamic_topk `
+  --pgap_dyn_quantile 0.9 --pgap_dyn_mode max `
+  --pgap_border_width 12 `
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 `
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" `
+  2>&1 | Tee-Object -FilePath $LOG_FILE
+
+-----相位引导的自动提示机制（PGAP） DCT + 边界屏蔽 + 动态阈值 + 不加窗 的训练命令（Ubuntu）
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=1;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_PGAP_DCT_nowin_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search \
+  --use_pgap --pgap_use_dct --pgap_no_window \
+  --pgap_dyn_quantile 0.9 --pgap_dyn_mode max \
+  --pgap_border_width 12 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
+  >/dev/null 2>&1 &'
+
+-----相位引导的自动提示机制（PGAP） DCT + 边界屏蔽 + 动态阈值 + 不加窗 的训练命令（windows）
+$env:PYTHONUNBUFFERED=1
+$env:CUDA_VISIBLE_DEVICES="1"
+$ROOT="E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST"
+$SIZE=256; $BS=4; $EPOCHS=1000; $MODEL="vitt"; $KP=1; $TRAIN_DIR="50_50"
+$DATASET=(Split-Path $ROOT -Leaf); $SPLIT_TAG="_split-$TRAIN_DIR"
+$EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_PGAP_DCT_nowin_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}"
+$kpFlag = if ($KP -eq 1) { "--keep_ratio_pad" } else { "" }
+$TS = Get-Date -Format "yyyyMMdd_HHmmss"
+$LOG_ROOT = "outputs_sam_sirst_logs\${EXP}_$TS"; New-Item -ItemType Directory -Force -Path $LOG_ROOT | Out-Null
+$LOG_FILE = "$LOG_ROOT\train_$TS.log"
+python -u train_sirst_hq_ubuntu.py `
+  --data_root "$ROOT" --train_txt "$TRAIN_DIR\train.txt" --val_txt "$TRAIN_DIR\test.txt" `
+  --size $SIZE $kpFlag --batch_size $BS --epochs $EPOCHS --model $MODEL `
+  --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 `
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search `
+  --use_pgap --pgap_use_dct --pgap_no_window `
+  --pgap_dyn_quantile 0.9 --pgap_dyn_mode max `
+  --pgap_border_width 12 `
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 `
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" `
+  2>&1 | Tee-Object -FilePath $LOG_FILE
+
+
+---------------PGAP 背景峰值→负点监督 + 两步 prompting+DCT+不加窗-ubuntu版本
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=6;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_PGAP_dct_nowin_posneg_2stage_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search \
+  --use_pgap --pgap_use_dct --pgap_no_window \
+  --pgap_label_by_gt --pgap_min_pos 1 --pgap_max_neg 2 \
+  --pgap_two_stage --pgap_stage1_top_k 1 --pgap_stage1_thr 0.5 --pgap_stage2_neg 2 \
+  --pgap_top_k 5 --pgap_dyn_quantile 0.9 --pgap_dyn_mode max \
+  --pgap_border_width 12 --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
+  >/dev/null 2>&1 &'
+
+---------------PGAP 背景峰值→负点监督 + 两步 prompting-ubuntu版本
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=0;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_PGAP_posneg_2stage_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search \
+  --use_pgap \
+  --pgap_label_by_gt --pgap_min_pos 1 --pgap_max_neg 2 \
+  --pgap_two_stage --pgap_stage1_top_k 1 --pgap_stage1_thr 0.5 --pgap_stage2_neg 2 \
+  --pgap_top_k 5 --pgap_dyn_quantile 0.9 --pgap_dyn_mode max \
+  --pgap_border_width 12 --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
+  >/dev/null 2>&1 &'
+
+
+
+
+-----相位引导的自动提示机制（PGAP）+随机负点（混合提示）训练脚本-ubuntu训练脚本
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=6;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_PGAP_neg2_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search \
+  --use_pgap --pgap_top_k 5 --pgap_min_dist 10 --pgap_saliency_thr 0.1 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 --pgap_neg_points 2 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
+  >/dev/null 2>&1 &'
+
+
+
+-----相位引导的自动提示机制（PGAP-ubuntu训练脚本---平衡版
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=0;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=800; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_vitt_s${SIZE}_PGAP_bal_bs${BS}_e${EPOCHS}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 150 \
+  --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 \
+  --val_thr_search --val_thr_min 0.35 --val_thr_max 0.45 --val_thr_step 0.02 \
+  --use_pgap --pgap_top_k 5 --pgap_min_dist 10 --pgap_saliency_thr 0.1 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP"
+' >/dev/null 2>&1 &
+
+-----相位引导的自动提示机制（PGAP-ubuntu训练脚本---高召回版（更容易检测到弱小目标）
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=1;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=800; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_vitt_s${SIZE}_PGAP_recall_bs${BS}_e${EPOCHS}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 100 \
+  --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.4 \
+  --val_thr_search --val_thr_min 0.30 --val_thr_max 0.45 --val_thr_step 0.02 \
+  --use_pgap --pgap_top_k 6 --pgap_min_dist 8 --pgap_saliency_thr 0.05 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP"
+' >/dev/null 2>&1 &
+
+-----相位引导的自动提示机制（PGAP-ubuntu训练脚本---高精度版（抑制误检、降低 FA）
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=2;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=800; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_vitt_s${SIZE}_PGAP_prec_bs${BS}_e${EPOCHS}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 200 \
+  --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.2 \
+  --val_thr_search --val_thr_min 0.40 --val_thr_max 0.55 --val_thr_step 0.02 \
+  --use_pgap --pgap_top_k 3 --pgap_min_dist 12 --pgap_saliency_thr 0.15 \
+  --pgap_blur_kernel 7 --pgap_blur_sigma 1.2 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP"
+' >/dev/null 2>&1 &
+
+
+
+
+-----各向异性光谱门控（ASG）+相位引导的自动提示机制（PGAP-ubuntu训练脚本---平衡版
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=0;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=800; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_vitt_s${SIZE}_ASG2_PGAP_bal_bs${BS}_e${EPOCHS}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 150 \
+  --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 \
+  --val_thr_search --val_thr_min 0.35 --val_thr_max 0.45 --val_thr_step 0.02 \
+  --use_asg_hq --asg_variant asg2 --asg_loc encoder \
+  --asg_radial_bins 48 --asg_angular_bins 96 --asg_strength_enc 0.6 \
+  --use_pgap --pgap_top_k 5 --pgap_min_dist 10 --pgap_saliency_thr 0.1 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP"
+' >/dev/null 2>&1 &
+
+-----各向异性光谱门控（ASG）+相位引导的自动提示机制（PGAP-ubuntu训练脚本---高召回版（更容易检测到弱小目标）
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=1;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=800; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_vitt_s${SIZE}_ASG2_PGAP_recall_bs${BS}_e${EPOCHS}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 100 \
+  --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.4 \
+  --val_thr_search --val_thr_min 0.30 --val_thr_max 0.45 --val_thr_step 0.02 \
+  --use_asg_hq --asg_variant asg2 --asg_loc encoder \
+  --asg_radial_bins 48 --asg_angular_bins 96 --asg_strength_enc 0.7 \
+  --use_pgap --pgap_top_k 6 --pgap_min_dist 8 --pgap_saliency_thr 0.05 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP"
+' >/dev/null 2>&1 &
+
+-----各向异性光谱门控（ASG）+相位引导的自动提示机制（PGAP-ubuntu训练脚本---高精度版（抑制误检、降低 FA）
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=2;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=800; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_vitt_s${SIZE}_ASG2_PGAP_prec_bs${BS}_e${EPOCHS}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 200 \
+  --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.2 \
+  --val_thr_search --val_thr_min 0.40 --val_thr_max 0.55 --val_thr_step 0.02 \
+  --use_asg_hq --asg_variant asg2 --asg_loc encoder \
+  --asg_radial_bins 48 --asg_angular_bins 96 --asg_strength_enc 0.5 \
+  --use_pgap --pgap_top_k 3 --pgap_min_dist 12 --pgap_saliency_thr 0.15 \
+  --pgap_blur_kernel 7 --pgap_blur_sigma 1.2 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP"
+' >/dev/null 2>&1 &
+
+
+
+
+-----各向异性光谱门控（ASG）+相位引导的自动提示机制（PGAP）训练脚本-windows训练脚本
+$env:PYTHONUNBUFFERED='1'; $GPU=0; $env:CUDA_VISIBLE_DEVICES="$GPU";
+$ROOT="E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST";
+$SIZE=256; $BS=4; $EPOCHS=1000; $MODEL="vitt"; $KP=1; $TRAIN_DIR="50_50";
+$DATASET=Split-Path $ROOT -Leaf; $SPLIT_TAG="_split-$TRAIN_DIR";
+$EXP="$($DATASET)_model-$MODEL" + "_size$SIZE" + "_HQ_ASG2_PGAP_bs$BS" + "_e$EPOCHS" + "_kp$KP$SPLIT_TAG";
+$kpFlag = if ($KP -eq 1) {"--keep_ratio_pad"} else {""};
+python -u train_sirst_hq.py `
+  --data_root $ROOT --train_txt "$TRAIN_DIR\train.txt" --val_txt "$TRAIN_DIR\test.txt" `
+  --size $SIZE $kpFlag --batch_size $BS --epochs $EPOCHS --model $MODEL `
+  --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 `
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search `
+  --use_asg_hq --asg_variant asg2 --asg_loc encoder `
+  --asg_radial_bins 48 --asg_angular_bins 96 --asg_strength_enc 0.6 `
+  --use_pgap --pgap_top_k 5 --pgap_min_dist 10 --pgap_saliency_thr 0.1 `
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 `
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP"
+
+
+-----各向异性光谱门控（ASG）+相位引导的自动提示机制（PGAP）训练脚本-ubuntu训练脚本
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=6;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_ASG2_PGAP_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search \
+  --use_asg_hq --asg_variant asg2 \
+  --asg_loc both --asg_radial_bins 64 --asg_angular_bins 128 \
+  --asg_strength_enc 1.0 --asg_strength_dec 1.0 \
+  --use_pgap --pgap_top_k 5 --pgap_min_dist 10 --pgap_saliency_thr 0.1 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP"
+' >/dev/null 2>&1 &
+
+
+
+
+
+
+
+
+-----------------------训练train_sirst_hq_point.py点监督代码
+#只有质心点监督
+$env:PYTHONUNBUFFERED='1'; $GPU=0; $env:CUDA_VISIBLE_DEVICES="$GPU"; $ROOT="E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST"; `
+$SIZE=256; $BS=4; $EPOCHS=1000; $MODEL="vitt"; $KP=1; $TRAIN_DIR="50_50"; $DATASET=Split-Path $ROOT -Leaf; `
+$SPLIT_TAG="_split-$TRAIN_DIR"; $EXP="$($DATASET)_model-$MODEL" + "_size$SIZE" + "_use_HQ_point_centroid_bs$BS" + "_e$EPOCHS" + "_kp$KP$SPLIT_TAG"; `
+$TS=Get-Date -Format 'yyyyMMdd_HHmmss'; $LOG_ROOT="outputs_sam_sirst_logs\$($EXP)_$TS"; New-Item -ItemType Directory -Force -Path $LOG_ROOT | `
+Out-Null; $kpFlag = if ($KP -eq 1) {"--keep_ratio_pad"} else {""}; python -u train_sirst_hq_point.py --data_root $ROOT --train_txt "$TRAIN_DIR\train.txt" `
+--val_txt "$TRAIN_DIR\test.txt" --size $SIZE $kpFlag --batch_size $BS --epochs $EPOCHS --model $MODEL --hq_warmup_epochs 30 `
+--val_thr_search --use_radial_gate_hq --rgate_loc encoder --freq_patch_size_hq 8 --radial_bins_hq 6 --radial_channel_shared_hq `
+--rgate_strength_enc 0.5 --rgate_strength_dec 0.5 --points_dir "points" --points_required 1 `
+--init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" 2>&1 | Tee-Object -FilePath "$LOG_ROOT\train_$TS.log"
+
+#质心+背景点监督
+$env:PYTHONUNBUFFERED='1'; $GPU=0; $env:CUDA_VISIBLE_DEVICES="$GPU"; $ROOT="E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST"; `
+$SIZE=256; $BS=4; $EPOCHS=1000; $MODEL="vitt"; $KP=1; $TRAIN_DIR="50_50"; $DATASET=Split-Path $ROOT -Leaf; `
+$SPLIT_TAG="_split-$TRAIN_DIR"; $EXP="$($DATASET)_model-$MODEL" + "_size$SIZE" + "_use_HQ_point_centroid_neg_bs$BS" + "_e$EPOCHS" + "_kp$KP$SPLIT_TAG"; `
+$TS=Get-Date -Format 'yyyyMMdd_HHmmss'; $LOG_ROOT="outputs_sam_sirst_logs\$($EXP)_$TS"; New-Item -ItemType Directory -Force -Path $LOG_ROOT | `
+Out-Null; $kpFlag = if ($KP -eq 1) {"--keep_ratio_pad"} else {""}; python -u train_sirst_hq_point.py --data_root $ROOT --train_txt "$TRAIN_DIR\train.txt" `
+--val_txt "$TRAIN_DIR\test.txt" --size $SIZE $kpFlag --batch_size $BS --epochs $EPOCHS --model $MODEL --hq_warmup_epochs 30 `
+--val_thr_search --use_radial_gate_hq --rgate_loc encoder --freq_patch_size_hq 8 --radial_bins_hq 6 --radial_channel_shared_hq `
+--rgate_strength_enc 0.5 --rgate_strength_dec 0.5 --points_dir "points" --points_required 1 `
+--init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" 2>&1 | Tee-Object -FilePath "$LOG_ROOT\train_$TS.log"
+
+
+#质心+背景点监督+轻量全图损失（非严格点监督）
+$env:PYTHONUNBUFFERED='1'; $GPU=0; $env:CUDA_VISIBLE_DEVICES="$GPU"; $ROOT="E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST"; `
+$SIZE=256; $BS=4; $EPOCHS=1000; $MODEL="vitt"; $KP=1; $TRAIN_DIR="50_50"; $DATASET=Split-Path $ROOT -Leaf; `
+$SPLIT_TAG="_split-$TRAIN_DIR"; $EXP="$($DATASET)_model-$MODEL" + "_size$SIZE" + "_use_HQ_point_centroid_neg_maskloss_bs$BS" + "_e$EPOCHS" + "_kp$KP$SPLIT_TAG"; `
+$TS=Get-Date -Format 'yyyyMMdd_HHmmss'; $LOG_ROOT="outputs_sam_sirst_logs\$($EXP)_$TS"; New-Item -ItemType Directory -Force -Path $LOG_ROOT | `
+Out-Null; $kpFlag = if ($KP -eq 1) {"--keep_ratio_pad"} else {""}; python -u train_sirst_hq_point.py --data_root $ROOT --train_txt "$TRAIN_DIR\train.txt" `
+--val_txt "$TRAIN_DIR\test.txt" --size $SIZE $kpFlag --batch_size $BS --epochs $EPOCHS --model $MODEL --hq_warmup_epochs 30 `
+--val_thr_search --use_radial_gate_hq --rgate_loc encoder --freq_patch_size_hq 8 --radial_bins_hq 6 --radial_channel_shared_hq `
+--rgate_strength_enc 0.5 --rgate_strength_dec 0.5 --points_dir "points" --points_required 1 --use_mask_loss `
+--init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" 2>&1 | Tee-Object -FilePath "$LOG_ROOT\train_$TS.log"
+
+
+#质心+背景点监督+点周围构造粗掩模
+$env:PYTHONUNBUFFERED='1'; $GPU=0; $env:CUDA_VISIBLE_DEVICES="$GPU"; $ROOT="E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST"; `
+$SIZE=256; $BS=4; $EPOCHS=1000; $MODEL="vitt"; $KP=1; $TRAIN_DIR="50_50"; $DATASET=Split-Path $ROOT -Leaf; `
+$SPLIT_TAG="_split-$TRAIN_DIR"; $EXP="$($DATASET)_model-$MODEL" + "_size$SIZE" + "_use_HQ_point_centroid_neg_coarse_bs$BS" + "_e$EPOCHS" + "_kp$KP$SPLIT_TAG"; `
+$TS=Get-Date -Format 'yyyyMMdd_HHmmss'; $LOG_ROOT="outputs_sam_sirst_logs\$($EXP)_$TS"; New-Item -ItemType Directory -Force -Path $LOG_ROOT | `
+Out-Null; $kpFlag = if ($KP -eq 1) {"--keep_ratio_pad"} else {""}; python -u train_sirst_hq_point.py --data_root $ROOT --train_txt "$TRAIN_DIR\train.txt" `
+--val_txt "$TRAIN_DIR\test.txt" --size $SIZE $kpFlag --batch_size $BS --epochs $EPOCHS --model $MODEL --hq_warmup_epochs 30 `
+--val_thr_search --use_radial_gate_hq --rgate_loc encoder --freq_patch_size_hq 8 --radial_bins_hq 6 --radial_channel_shared_hq `
+--rgate_strength_enc 0.5 --rgate_strength_dec 0.5 --points_dir "points" --points_required 1 `
+--use_coarse_mask_loss --coarse_radius 5 --coarse_neg_radius 3 `
+--init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" 2>&1 | Tee-Object -FilePath "$LOG_ROOT\train_$TS.log"
+
+#质心+背景点监督+点周围构造粗掩模+统计数据集确定粗掩膜半径
+$env:PYTHONUNBUFFERED='1'; $GPU=0; $env:CUDA_VISIBLE_DEVICES="$GPU"; $ROOT="E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST"; `
+$SIZE=256; $BS=4; $EPOCHS=1000; $MODEL="vitt"; $KP=1; $TRAIN_DIR="50_50"; $DATASET=Split-Path $ROOT -Leaf; `
+$SPLIT_TAG="_split-$TRAIN_DIR"; $EXP="$($DATASET)_model-$MODEL" + "_size$SIZE" + "_use_HQ_point_centroid_neg_coarseR3_W07_bs$BS" + "_e$EPOCHS" + "_kp$KP$SPLIT_TAG"; `
+$TS=Get-Date -Format 'yyyyMMdd_HHmmss'; $LOG_ROOT="outputs_sam_sirst_logs\$($EXP)_$TS"; New-Item -ItemType Directory -Force -Path $LOG_ROOT | `
+Out-Null; $kpFlag = if ($KP -eq 1) {"--keep_ratio_pad"} else {""}; python -u train_sirst_hq_point.py --data_root $ROOT --train_txt "$TRAIN_DIR\train.txt" `
+--val_txt "$TRAIN_DIR\test.txt" --size $SIZE $kpFlag --batch_size $BS --epochs $EPOCHS --model $MODEL --hq_warmup_epochs 30 `
+--val_thr_search --use_radial_gate_hq --rgate_loc encoder --freq_patch_size_hq 8 --radial_bins_hq 6 --radial_channel_shared_hq `
+--rgate_strength_enc 0.5 --rgate_strength_dec 0.5 --points_dir "points" --points_required 1 `
+--use_coarse_mask_loss --coarse_radius 3 --coarse_mask_weight 0.7 --coarse_neg_radius 3 `
+--init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" 2>&1 | Tee-Object -FilePath "$LOG_ROOT\train_$TS.log"
+
+#ubuntu命令+质心+背景点监督+点周围构造粗掩模+统计数据集确定粗掩膜半径
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=1; ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST"; SIZE=256; BS=4; EPOCHS=1000; 
+MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; DATASET=$(basename "$ROOT"); 
+SPLIT_TAG="_split-$TRAIN_DIR"; EXP="${DATASET}_model-${MODEL}_size${SIZE}_use_HQ_point_centroid_neg_coarseR3_W07_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}"; \
+TS=$(date +%Y%m%d_%H%M%S); LOG_ROOT="outputs_sam_sirst_logs/${EXP}_${TS}"; mkdir -p "$LOG_ROOT"; kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi; \
+python -u train_sirst_hq_point.py --data_root "$ROOT" --train_txt "$TRAIN_DIR/train.txt" --val_txt "$TRAIN_DIR/test.txt" --size "$SIZE" $kpFlag --batch_size "$BS" \
+--epochs "$EPOCHS" --model "$MODEL" --hq_warmup_epochs 30 --val_thr_search --use_radial_gate_hq --rgate_loc encoder --freq_patch_size_hq 8 \
+--radial_bins_hq 6 --radial_channel_shared_hq --rgate_strength_enc 0.5 --rgate_strength_dec 0.5 --points_dir "points" --points_required 1 \
+--use_coarse_mask_loss --coarse_radius 3 --coarse_mask_weight 0.7 --coarse_neg_radius 3 --init_from_baseline weights/efficient_sam_vitt.pt \
+--exp_name "$EXP" 2>&1 | tee "$LOG_ROOT/train_${TS}.log"' >/dev/null 2>&1 &
+
+#ubuntu命令+质心+背景点监督+点周围构造粗掩模+统计数据集确定粗掩膜半径
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=0; ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST"; SIZE=256; BS=4; EPOCHS=1000; 
+MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; DATASET=$(basename "$ROOT"); 
+SPLIT_TAG="_split-$TRAIN_DIR"; EXP="${DATASET}_model-${MODEL}_size${SIZE}_use_HQ_point_centroid_neg8_coarseR3_W07_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}"; \
+TS=$(date +%Y%m%d_%H%M%S); LOG_ROOT="outputs_sam_sirst_logs/${EXP}_${TS}"; mkdir -p "$LOG_ROOT"; kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi; \
+python -u train_sirst_hq_point.py --data_root "$ROOT" --train_txt "$TRAIN_DIR/train.txt" --val_txt "$TRAIN_DIR/test.txt" --size "$SIZE" $kpFlag --batch_size "$BS" \
+--epochs "$EPOCHS" --model "$MODEL" --hq_warmup_epochs 30 --val_thr_search --use_radial_gate_hq --rgate_loc encoder --freq_patch_size_hq 8 \
+--radial_bins_hq 6 --radial_channel_shared_hq --rgate_strength_enc 0.5 --rgate_strength_dec 0.5 --points_dir "points_neg8" --points_required 1 \
+--use_coarse_mask_loss --coarse_radius 3 --coarse_mask_weight 0.7 --coarse_neg_radius 3 --init_from_baseline weights/efficient_sam_vitt.pt \
+--exp_name "$EXP" 2>&1 | tee "$LOG_ROOT/train_${TS}.log"' >/dev/null 2>&1 &
+
+
+-------------------构建正点和负点数据集
+python scripts/generate_points_from_masks.py --data_root "E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST" `
+--split_txt "50_50\train.txt" --mode centroid --n_neg 4 --boundary_prior --boundary_ratio 0.5
+python scripts/generate_points_from_masks.py --data_root "E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST" `
+--split_txt "50_50\test.txt" --mode centroid --n_neg 4 --boundary_prior --boundary_ratio 0.5
+
+-------------------构建正点和8个负点数据集
+python scripts/generate_points_from_masks.py --data_root "E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST" `
+  --split_txt "50_50\train.txt" --mode centroid --n_neg 8 --boundary_prior --boundary_ratio 0.5 --points_dir "points_neg8"
+
+python scripts/generate_points_from_masks.py --data_root "E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST" `
+  --split_txt "50_50\test.txt" --mode centroid --n_neg 8 --boundary_prior --boundary_ratio 0.5 --points_dir "points_neg8"
+
+
+
+
+
+
+

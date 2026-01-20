@@ -1,0 +1,2 @@
+Run directory: ./outputs_sam_sirst_point_hq\NUDT-SIRST_model-vitt_size256_use_HQ_point_centroid_neg_coarseR3_W07_bs4_e1000_kp1_split-50_50_20260104_121555
+[Epoch 001] loss=1.3239 miou=0.1484 niou=0.3250 f1=0.2585 pd=0.9841 fa=0.001812 thr=0.48 time=41.6s

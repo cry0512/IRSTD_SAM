@@ -1,0 +1,2 @@
+Total points on GT: 920/2666 (0.3451)
+Positive samples: 664, Negative samples: 0
