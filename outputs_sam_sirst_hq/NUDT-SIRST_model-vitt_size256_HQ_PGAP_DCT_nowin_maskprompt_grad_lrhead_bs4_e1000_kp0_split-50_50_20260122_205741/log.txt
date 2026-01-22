@@ -1,0 +1,6 @@
+Run directory: ./outputs_sam_sirst_hq\NUDT-SIRST_model-vitt_size256_HQ_PGAP_DCT_nowin_maskprompt_grad_lrhead_bs4_e1000_kp0_split-50_50_20260122_205741
+[Epoch 001] loss=1.3802 miou=0.0000 niou=0.0000 f1=0.0000 pd=0.0000 fa=0.000000 thr=0.35 time=42.8s
+[Epoch 002] loss=1.2151 miou=0.0130 niou=0.0146 f1=0.0256 pd=0.1175 fa=0.000003 thr=0.35 time=41.0s
+[Epoch 003] loss=0.6606 miou=0.5808 niou=0.5837 f1=0.7348 pd=0.9513 fa=0.000085 thr=0.44 time=41.1s
+[Epoch 004] loss=0.3469 miou=0.6234 niou=0.6535 f1=0.7680 pd=0.9577 fa=0.000066 thr=0.42 time=41.4s
+[Epoch 005] loss=0.3141 miou=0.6379 niou=0.6694 f1=0.7789 pd=0.9630 fa=0.000052 thr=0.40 time=40.6s

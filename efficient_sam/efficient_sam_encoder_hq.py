@@ -1,5 +1,5 @@
 import math
-from typing import List, Type, Tuple
+from typing import List, Type, Tuple, Optional
 
 import torch
 import torch.nn as nn
@@ -72,18 +72,52 @@ class Mlp(nn.Module):
         return x
 
 
+class FSAdapter(nn.Module):
+    def __init__(self, dim: int, scale: float = 0.0):
+        super().__init__()
+        self.scale = nn.Parameter(torch.tensor(float(scale)))
+        self.spatial_conv = nn.Sequential(
+            nn.Conv2d(dim, dim, kernel_size=3, padding=1, groups=dim, bias=False),
+            nn.GELU(),
+            nn.Conv2d(dim, dim, kernel_size=1, bias=False),
+        )
+        self.complex_weight = nn.Parameter(torch.randn(1, dim, 1, 1, 2) * 0.02)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, N, C = x.shape
+        H = int(math.sqrt(N))
+        W = H
+        assert H * W == N, "Input features must be square"
+        x_img = x.permute(0, 2, 1).reshape(B, C, H, W)
+        x_spatial = self.spatial_conv(x_img)
+        x_freq = torch.fft.rfft2(x_img, norm="ortho")
+        weight = torch.view_as_complex(self.complex_weight)
+        x_freq = x_freq * weight
+        x_spectral = torch.fft.irfft2(x_freq, s=(H, W), norm="ortho")
+        out = x_spatial + x_spectral
+        out = out.reshape(B, C, N).permute(0, 2, 1)
+        return self.scale * out
+
+
 class Block(nn.Module):
-    def __init__(self, dim, num_heads, mlp_ratio=4.0, qkv_bias=False, qk_scale=None, act_layer=nn.GELU):
+    def __init__(self, dim, num_heads, mlp_ratio=4.0, qkv_bias=False, qk_scale=None, act_layer=nn.GELU, use_adapter: bool = True):
         super().__init__()
         self.norm1 = nn.LayerNorm(dim, eps=1e-6)
         self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale)
         self.norm2 = nn.LayerNorm(dim, eps=1e-6)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer)
+        self.use_adapter = bool(use_adapter)
+        if self.use_adapter:
+            self.adapter = FSAdapter(dim)
 
     def forward(self, x):
         x = x + self.attn(self.norm1(x))
-        x = x + self.mlp(self.norm2(x))
+        x_norm = self.norm2(x)
+        res = self.mlp(x_norm)
+        if self.use_adapter:
+            res = res + self.adapter(x_norm)
+        x = x + res
         return x
 
 
@@ -111,6 +145,7 @@ class ImageEncoderViTHQ(nn.Module):
     """EfficientSAM encoder variant that also returns early feature for HQ head.
 
     Returns tuple: (neck_out: [B,C,H,W], interm: [B,H',W',C]).
+    When return_multi_scale is enabled, also returns a list of intermediate features.
     """
 
     def __init__(
@@ -125,6 +160,8 @@ class ImageEncoderViTHQ(nn.Module):
         mlp_ratio: float,
         neck_dims: List[int],
         act_layer: Type[nn.Module],
+        use_adapter: bool = True,
+        return_multi_scale: bool = False,
     ) -> None:
         super().__init__()
 
@@ -133,13 +170,17 @@ class ImageEncoderViTHQ(nn.Module):
         self.transformer_output_dim = ([patch_embed_dim] + neck_dims)[-1]
         self.pretrain_use_cls_token = True
         pretrain_img_size = 224
+        self.return_multi_scale = bool(return_multi_scale)
+        self.ms_out_indices = [2, 5, 8, 11]
 
         self.patch_embed = PatchEmbed(img_size, patch_size, in_chans, patch_embed_dim)
         num_patches = (pretrain_img_size // patch_size) * (pretrain_img_size // patch_size)
         num_positions = num_patches + 1
         self.pos_embed = nn.Parameter(torch.zeros(1, num_positions, patch_embed_dim))
 
-        self.blocks = nn.ModuleList([Block(patch_embed_dim, num_heads, mlp_ratio, True) for _ in range(depth)])
+        self.blocks = nn.ModuleList([
+            Block(patch_embed_dim, num_heads, mlp_ratio, True, use_adapter=use_adapter) for _ in range(depth)
+        ])
 
         self.neck = nn.Sequential(
             nn.Conv2d(patch_embed_dim, neck_dims[0], kernel_size=1, bias=False),
@@ -151,7 +192,7 @@ class ImageEncoderViTHQ(nn.Module):
         self.radial_gate = None
         self.rgate_strength = 0.5
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor):
         assert x.shape[2] == self.img_size and x.shape[3] == self.img_size, "input image size must match self.img_size"
         x = self.patch_embed(x)
         # B C H W -> B H W C tokens
@@ -162,11 +203,15 @@ class ImageEncoderViTHQ(nn.Module):
         x_tok = x.reshape(x.shape[0], num_patches * num_patches, x.shape[3])
 
         interm = None
+        multi_scale_feats = []
         for i, blk in enumerate(self.blocks):
             x_tok = blk(x_tok)
             if i == 0:  # take very early feature for HQ branch
                 x_grid = x_tok.reshape(x.shape[0], num_patches, num_patches, x.shape[3])
                 interm = x_grid  # [B, H', W', C]
+            if self.return_multi_scale and i in self.ms_out_indices:
+                x_grid = x_tok.reshape(x.shape[0], num_patches, num_patches, x.shape[3])
+                multi_scale_feats.append(x_grid.permute(0, 3, 1, 2))
 
         x_grid = x_tok.reshape(x.shape[0], num_patches, num_patches, x.shape[3])
         neck_in = x_grid.permute(0, 3, 1, 2)
@@ -178,4 +223,6 @@ class ImageEncoderViTHQ(nn.Module):
             except Exception:
                 # fall back silently if shapes mismatch
                 pass
+        if self.return_multi_scale:
+            return neck_out, interm, multi_scale_feats
         return neck_out, interm

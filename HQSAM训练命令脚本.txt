@@ -620,7 +620,161 @@ python -u train_sirst_hq_ubuntu.py \
   --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
   >/dev/null 2>&1 &'
 
------相位引导的自动提示机制（PGAP） DCT + 边界屏蔽 + 动态阈值 + 不加窗 的训练命令（windows）
+-----相位引导的自动提示机制（PGAP） DCT + 边界屏蔽 + 动态阈值 + 不加窗+显著性图特征调制mod的训练命令（Ubuntu）
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=1;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_PGAP_DCT_MOD_nowin_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search \
+  --use_pgap --pgap_use_dct --pgap_no_window \
+  --pgap_dyn_quantile 0.9 --pgap_dyn_mode max \
+  --pgap_border_width 12 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
+  >/dev/null 2>&1 &'
+
+-----相位引导的自动提示机制（PGAP） DCT + 边界屏蔽 + 动态阈值 + 
+-----不加窗+显著性图特征调制mod+mask prompt的训练命令（Ubuntu）
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=6;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_PGAP_DCT_MOD_nowin_maskprompt_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search \
+  --use_pgap --use_mask_prompt --pgap_use_dct --pgap_no_window \
+  --pgap_dyn_quantile 0.9 --pgap_dyn_mode max \
+  --pgap_border_width 12 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
+  >/dev/null 2>&1 &'
+
+-----相位引导的自动提示机制（PGAP） DCT + 边界屏蔽 + 动态阈值 + 
+-----不加窗+mask prompt的训练命令（Ubuntu）
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=0;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_PGAP_DCT_nowin_maskprompt_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search \
+  --use_pgap --use_mask_prompt --pgap_use_dct --pgap_no_window \
+  --pgap_dyn_quantile 0.9 --pgap_dyn_mode max \
+  --pgap_border_width 12 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
+  >/dev/null 2>&1 &'
+
+-----相位引导的自动提示机制（PGAP） DCT + 边界屏蔽 + 动态阈值 + 
+-----不加窗+mask prompt+梯度累积的训练命令（Ubuntu）
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=1;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_PGAP_DCT_nowin_maskprompt_grad_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search \
+  --use_pgap --use_mask_prompt --pgap_use_dct --pgap_no_window \
+  --pgap_dyn_quantile 0.9 --pgap_dyn_mode max \
+  --pgap_border_width 12 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --use_grad_accum --accumulation_steps 4 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
+  >/dev/null 2>&1 &'
+
+-----相位引导的自动提示机制（PGAP） DCT + 边界屏蔽 + 动态阈值 + 
+-----不加窗+mask prompt+msDetail+梯度累积+lr_head的训练命令（windows）
+$env:PYTHONUNBUFFERED=1
+$env:CUDA_VISIBLE_DEVICES="0"
+$ROOT="E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST"
+$SIZE=256; $BS=4; $EPOCHS=1000; $MODEL="vitt"; $KP=0; $TRAIN_DIR="50_50"
+$DATASET=(Split-Path $ROOT -Leaf); $SPLIT_TAG="_split-$TRAIN_DIR"
+$EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_PGAP_DCT_nowin_maskprompt_ms_grad_lrhead_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}"
+$kpFlag = if ($KP -eq 1) { "--keep_ratio_pad" } else { "" }
+$TS = Get-Date -Format "yyyyMMdd_HHmmss"
+$LOG_ROOT = "outputs_sam_sirst_logs\${EXP}_$TS"; New-Item -ItemType Directory -Force -Path $LOG_ROOT | Out-Null
+$LOG_FILE = "$LOG_ROOT\train_$TS.log"
+python -u train_sirst_hq_ubuntu.py `
+  --data_root "$ROOT" --train_txt "$TRAIN_DIR\train.txt" --val_txt "$TRAIN_DIR\test.txt" `
+  --size $SIZE $kpFlag --batch_size $BS --epochs $EPOCHS --model $MODEL `
+  --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 `
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search `
+  --use_pgap --use_mask_prompt --pgap_use_dct --pgap_no_window `
+  --pgap_dyn_quantile 0.9 --pgap_dyn_mode max `
+  --pgap_border_width 12 `
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 `
+  --use_grad_accum --accumulation_steps 4 `
+  --use_ms_fusion --use_detail_enhancer `
+  --lr_encoder 1e-5 --lr_head 2e-4 `
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" `
+  2>&1 | Tee-Object -FilePath $LOG_FILE
+
+-----相位引导的自动提示机制（PGAP） DCT + 边界屏蔽 + 动态阈值 + 
+-----不加窗+显著性图特征调制mod+mask prompt+msDetail+FSADPTER的训练命令（Ubuntu）
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=2;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_PGAP_DCT_MOD_nowin_FSADPTER_maskprompt_msdetail_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search \
+  --use_pgap --use_mask_prompt --pgap_use_dct --pgap_no_window \
+  --pgap_dyn_quantile 0.9 --pgap_dyn_mode max \
+  --pgap_border_width 12 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --use_ms_fusion --use_detail_enhancer \
+  --use_fs_adapter \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
+  >/dev/null 2>&1 &'
+
+
+-----相位引导的自动提示机制（PGAP） DCT + 边界屏蔽 + 动态阈值 + 
+-----不加窗+显著性图特征调制mod+mask prompt+msDetail+FSADPTER+NWDLOSS的训练命令（Ubuntu）
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=5;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_PGAP_DCT_MOD_nowin_FSADPTER_maskprompt_msdetail_NWDLOSS_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search \
+  --use_pgap --use_mask_prompt --pgap_use_dct --pgap_no_window \
+  --pgap_dyn_quantile 0.9 --pgap_dyn_mode max \
+  --pgap_border_width 12 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --use_ms_fusion --use_detail_enhancer \
+  --use_fs_adapter \
+  --nwd_weight 1.0 --nwd_constant 12.0 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
+  >/dev/null 2>&1 &'
+
+
+-----相位引导的自动提示机制（PGAP） DCT + 边界屏蔽 + 动态阈值 + 不加窗的训练命令（windows）
 $env:PYTHONUNBUFFERED=1
 $env:CUDA_VISIBLE_DEVICES="1"
 $ROOT="E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST"
@@ -959,6 +1113,44 @@ python -u train_sirst_hq_point.py --data_root "$ROOT" --train_txt "$TRAIN_DIR/tr
 --radial_bins_hq 6 --radial_channel_shared_hq --rgate_strength_enc 0.5 --rgate_strength_dec 0.5 --points_dir "points_neg8" --points_required 1 \
 --use_coarse_mask_loss --coarse_radius 3 --coarse_mask_weight 0.7 --coarse_neg_radius 3 --init_from_baseline weights/efficient_sam_vitt.pt \
 --exp_name "$EXP" 2>&1 | tee "$LOG_ROOT/train_${TS}.log"' >/dev/null 2>&1 &
+
+-------仅使用 FS-Adapter（不使用 PGAP）NUDT+ubuntu训练命令
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=2;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_FSADAPTER_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search \
+  --use_fs_adapter \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
+  >/dev/null 2>&1 &'
+
+-------FS-Adapter + PGAP（DCT + nowin）NUDT+ubuntu训练命令
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=5;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_FSADAPTER_PGAP_DCT_nowin_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search \
+  --use_fs_adapter \
+  --use_pgap --pgap_use_dct --pgap_no_window \
+  --pgap_dyn_quantile 0.9 --pgap_dyn_mode max \
+  --pgap_border_width 12 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
+  >/dev/null 2>&1 &'
+
+
 
 
 -------------------构建正点和负点数据集

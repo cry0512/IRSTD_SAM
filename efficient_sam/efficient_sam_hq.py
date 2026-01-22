@@ -11,6 +11,63 @@ from .efficient_sam_encoder_hq import ImageEncoderViTHQ
 from .efficient_sam_decoder_hq import MaskDecoderHQ
 
 
+class SobelDetailEnhancer(nn.Module):
+    def __init__(self, dim: int):
+        super().__init__()
+        sobel_x = torch.tensor(
+            [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32
+        ).view(1, 1, 3, 3)
+        sobel_y = torch.tensor(
+            [[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32
+        ).view(1, 1, 3, 3)
+        self.register_buffer("sobel_x", sobel_x.repeat(dim, 1, 1, 1))
+        self.register_buffer("sobel_y", sobel_y.repeat(dim, 1, 1, 1))
+        self.dim = int(dim)
+        self.fusion = nn.Sequential(
+            nn.Conv2d(dim * 2, dim, kernel_size=1),
+            nn.BatchNorm2d(dim),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        grad_x = F.conv2d(x, self.sobel_x, padding=1, groups=self.dim)
+        grad_y = F.conv2d(x, self.sobel_y, padding=1, groups=self.dim)
+        magnitude = torch.sqrt(grad_x.pow(2) + grad_y.pow(2) + 1e-6)
+        out = torch.cat([x, magnitude], dim=1)
+        return self.fusion(out)
+
+
+class MultiScaleAggregator(nn.Module):
+    def __init__(self, in_dim: int, out_dim: int, num_levels: int = 4):
+        super().__init__()
+        self.convs = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv2d(in_dim, out_dim, kernel_size=1),
+                nn.BatchNorm2d(out_dim),
+                nn.ReLU(inplace=True),
+            ) for _ in range(num_levels)
+        ])
+        self.fusion_conv = nn.Sequential(
+            nn.Conv2d(out_dim * num_levels, out_dim, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_dim),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_dim, out_dim, kernel_size=1),
+        )
+
+    def forward(self, feats):
+        if not feats:
+            return None
+        use_levels = min(len(feats), len(self.convs))
+        processed = [self.convs[i](feats[i]) for i in range(use_levels)]
+        if len(processed) < len(self.convs):
+            # Pad missing levels with zeros to keep fusion shape stable.
+            b, c, h, w = processed[0].shape
+            for _ in range(len(self.convs) - len(processed)):
+                processed.append(torch.zeros((b, c, h, w), device=processed[0].device, dtype=processed[0].dtype))
+        out = torch.cat(processed, dim=1)
+        return self.fusion_conv(out)
+
+
 class EfficientSamHQ(nn.Module):
     mask_threshold: float = 0.0
     image_format: str = "RGB"
@@ -22,6 +79,8 @@ class EfficientSamHQ(nn.Module):
         mask_decoder: MaskDecoderHQ,
         pixel_mean: List[float] = [0.485, 0.456, 0.406],
         pixel_std: List[float] = [0.229, 0.224, 0.225],
+        use_ms_fusion: bool = False,
+        use_detail_enhancer: bool = False,
     ) -> None:
         super().__init__()
         self.image_encoder = image_encoder
@@ -41,11 +100,35 @@ class EfficientSamHQ(nn.Module):
             nn.Conv2d(mid_dim, neck_dim, kernel_size=1),
             nn.Sigmoid(),
         )
+        self.use_ms_fusion = bool(use_ms_fusion)
+        self.use_detail_enhancer = bool(use_detail_enhancer)
+        try:
+            embed_dim = int(self.image_encoder.patch_embed.proj.out_channels)
+        except Exception:
+            embed_dim = int(getattr(self.image_encoder, "transformer_output_dim", neck_dim))
+        if self.use_detail_enhancer:
+            self.detail_enhancer = SobelDetailEnhancer(embed_dim)
+        if self.use_ms_fusion:
+            self.ms_aggregator = MultiScaleAggregator(in_dim=embed_dim, out_dim=neck_dim)
 
     @torch.jit.export
     def get_image_embeddings(self, batched_images) -> Tuple[torch.Tensor, torch.Tensor]:
         batched_images = self.preprocess(batched_images)
-        return self.image_encoder(batched_images)
+        out = self.image_encoder(batched_images)
+        if isinstance(out, (tuple, list)) and len(out) == 3:
+            neck_out, interm, ms_feats = out
+        else:
+            neck_out, interm = out
+            ms_feats = []
+        if self.use_ms_fusion and ms_feats:
+            fused = self.ms_aggregator(ms_feats)
+            if fused is not None:
+                neck_out = neck_out + fused
+        if self.use_detail_enhancer and interm is not None:
+            interm_c = interm.permute(0, 3, 1, 2)
+            enhanced = self.detail_enhancer(interm_c)
+            interm = enhanced.permute(0, 2, 3, 1)
+        return neck_out, interm
 
     def apply_saliency_modulation(self, image_embeddings: torch.Tensor, saliency_map: torch.Tensor) -> torch.Tensor:
         if saliency_map is None:
@@ -69,9 +152,17 @@ class EfficientSamHQ(nn.Module):
         output_h: int = -1,
         output_w: int = -1,
         hq_token_only: bool = False,
+        batched_masks: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         batch_size, max_num_queries, num_pts, _ = batched_points.shape
         rescaled_batched_points = self.get_rescaled_pts(batched_points, input_h, input_w)
+        if batched_masks is not None:
+            if batched_masks.dim() == 3:
+                batched_masks = batched_masks.unsqueeze(1)
+            if batched_masks.shape[0] == batch_size:
+                batched_masks = batched_masks.repeat_interleave(max_num_queries, dim=0)
+            elif batched_masks.shape[0] != batch_size * max_num_queries:
+                raise ValueError("batched_masks must have batch size B or B*Q to match prompts.")
 
         sparse_embeddings, dense_embeddings = self.prompt_encoder(
             points=(
@@ -83,7 +174,7 @@ class EfficientSamHQ(nn.Module):
                 ),
             ),
             boxes=None,
-            masks=None,
+            masks=batched_masks,
         )  # sparse: [B*Q, N, C], dense: [B*Q, C, H, W]
         # Repeat along queries
         image_embeddings = image_embeddings.repeat_interleave(max_num_queries, dim=0)
@@ -154,7 +245,14 @@ class EfficientSamHQ(nn.Module):
         return (x - self.pixel_mean) / self.pixel_std
 
 
-def build_efficient_sam_hq(encoder_patch_embed_dim, encoder_num_heads, init_from_baseline: Optional[str] = None):
+def build_efficient_sam_hq(
+    encoder_patch_embed_dim,
+    encoder_num_heads,
+    init_from_baseline: Optional[str] = None,
+    use_adapter: bool = True,
+    use_ms_fusion: bool = False,
+    use_detail_enhancer: bool = False,
+):
     img_size = 1024
     encoder_patch_size = 16
     encoder_depth = 12
@@ -173,6 +271,8 @@ def build_efficient_sam_hq(encoder_patch_embed_dim, encoder_num_heads, init_from
         mlp_ratio=encoder_mlp_ratio,
         neck_dims=encoder_neck_dims,
         act_layer=nn.GELU,
+        use_adapter=use_adapter,
+        return_multi_scale=use_ms_fusion,
     )
 
     image_embedding_size = image_encoder.image_embedding_size
@@ -204,6 +304,8 @@ def build_efficient_sam_hq(encoder_patch_embed_dim, encoder_num_heads, init_from
         ),
         pixel_mean=[0.485, 0.456, 0.406],
         pixel_std=[0.229, 0.224, 0.225],
+        use_ms_fusion=use_ms_fusion,
+        use_detail_enhancer=use_detail_enhancer,
     )
     # Optional: initialize from baseline EfficientSAM checkpoint (partial, shape-matched)
     if init_from_baseline is not None and os.path.isfile(init_from_baseline):

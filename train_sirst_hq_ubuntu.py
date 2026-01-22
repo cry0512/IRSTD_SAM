@@ -24,6 +24,45 @@ def dice_loss(logits, target):
     return 1 - ((2 * inter + 1.0) / (denom + 1.0)).mean()
 
 
+class NWDLoss(nn.Module):
+    def __init__(self, constant: float = 12.0, eps: float = 1e-6):
+        super().__init__()
+        self.C = float(constant)
+        self.eps = float(eps)
+
+    def get_gaussian_params(self, mask, grid_x, grid_y):
+        mass = mask.sum(dim=(2, 3), keepdim=True) + self.eps
+        mu_x = (mask * grid_x).sum(dim=(2, 3), keepdim=True) / mass
+        mu_y = (mask * grid_y).sum(dim=(2, 3), keepdim=True) / mass
+        var_x = (mask * (grid_x - mu_x).pow(2)).sum(dim=(2, 3), keepdim=True) / mass
+        var_y = (mask * (grid_y - mu_y).pow(2)).sum(dim=(2, 3), keepdim=True) / mass
+        sigma_x = torch.sqrt(var_x + self.eps)
+        sigma_y = torch.sqrt(var_y + self.eps)
+        return mu_x, mu_y, sigma_x, sigma_y
+
+    def forward(self, preds, targets):
+        probs = torch.sigmoid(preds)
+        B, _, H, W = probs.shape
+        device = probs.device
+        y = torch.arange(H, device=device, dtype=probs.dtype) + 0.5
+        x = torch.arange(W, device=device, dtype=probs.dtype) + 0.5
+        try:
+            grid_y, grid_x = torch.meshgrid(y, x, indexing="ij")
+        except TypeError:
+            grid_y, grid_x = torch.meshgrid(y, x)
+        valid_mask = (targets.sum(dim=(2, 3)) > 0).float().view(B)
+
+        mu_x_p, mu_y_p, sig_x_p, sig_y_p = self.get_gaussian_params(probs, grid_x, grid_y)
+        mu_x_t, mu_y_t, sig_x_t, sig_y_t = self.get_gaussian_params(targets, grid_x, grid_y)
+
+        wd2 = (mu_x_p - mu_x_t).pow(2) + (mu_y_p - mu_y_t).pow(2) + \
+              (sig_x_p - sig_x_t).pow(2) + (sig_y_p - sig_y_t).pow(2)
+        wd2 = wd2.view(B)
+        nwd = torch.exp(-torch.sqrt(wd2 + self.eps) / self.C)
+        loss = 1.0 - nwd
+        return (loss * valid_mask).sum() / (valid_mask.sum() + self.eps)
+
+
 def radial_frequency_profile(mask: torch.Tensor, num_bins: int) -> torch.Tensor:
     """Compute normalized radial energy profile for each mask."""
     if mask.dim() != 4:
@@ -296,17 +335,31 @@ def train_one_epoch(model, loader, optimizer, scaler, device, epoch, args, pgap=
     if pgap is not None:
         pgap.train()
     bce = nn.BCEWithLogitsLoss()
+    use_grad_accum = bool(getattr(args, "use_grad_accum", False))
+    accumulation_steps = int(getattr(args, "accumulation_steps", 1))
+    if not use_grad_accum or accumulation_steps < 1:
+        accumulation_steps = 1
+    nwd_weight = float(getattr(args, "nwd_weight", 0.0))
+    nwd_criterion = NWDLoss(constant=float(getattr(args, "nwd_constant", 12.0))).to(device) if nwd_weight > 0.0 else None
     meter_loss, n = 0.0, 0
-    for batch in loader:
+    optimizer.zero_grad(set_to_none=True)
+    for step, batch in enumerate(loader):
         images = batch["image"].to(device, non_blocking=True)
         masks = batch["mask"].to(device, non_blocking=True)
         B, H, W = masks.shape
 
         with autocast():
             img_emb, interms = model.get_image_embeddings(images)
+            mask_prompt = None
             if pgap is not None:
                 pgap_pts, pgap_lbl, saliency = _build_pgap_prompts(pgap, images, masks, args)
-                img_emb = model.apply_saliency_modulation(img_emb, saliency)
+                if args.use_feature_mod:
+                    img_emb = model.apply_saliency_modulation(img_emb, saliency)
+                if args.use_mask_prompt:
+                    target_size = getattr(model.prompt_encoder, "mask_input_size", saliency.shape[-2:])
+                    mask_prompt = F.interpolate(
+                        saliency, size=target_size, mode="bilinear", align_corners=False
+                    )
                 pts = pgap_pts.unsqueeze(1)
                 lbl = pgap_lbl.unsqueeze(1)
                 pts, lbl = pts.to(device), lbl.to(device)
@@ -325,6 +378,7 @@ def train_one_epoch(model, loader, optimizer, scaler, device, epoch, args, pgap=
                 interms,
                 pts,
                 lbl,
+                batched_masks=mask_prompt,
                 multimask_output=False,
                 input_h=H,
                 input_w=W,
@@ -334,6 +388,8 @@ def train_one_epoch(model, loader, optimizer, scaler, device, epoch, args, pgap=
             )
             logits = pred_masks[:, 0, 0, ...].unsqueeze(1)
             loss = bce(logits, masks.unsqueeze(1)) + dice_loss(logits, masks.unsqueeze(1))
+            if nwd_criterion is not None:
+                loss = loss + nwd_weight * nwd_criterion(logits, masks.unsqueeze(1))
             freq_weight = float(getattr(args, "freq_consistency_weight", 0.0))
             if freq_weight > 0.0:
                 bins = max(2, int(getattr(args, "freq_consistency_bins", 32)))
@@ -357,13 +413,14 @@ def train_one_epoch(model, loader, optimizer, scaler, device, epoch, args, pgap=
                 dice_pts = dice_pts.mean()
                 loss = loss + args.point_loss_weight * (bce_points + dice_pts)
 
-        optimizer.zero_grad(set_to_none=True)
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
-
         meter_loss += loss.item() * B
         n += B
+        loss = loss / accumulation_steps
+        scaler.scale(loss).backward()
+        if (step + 1) % accumulation_steps == 0 or (step + 1) == len(loader):
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad(set_to_none=True)
     return meter_loss / max(n, 1)
 
 
@@ -387,10 +444,17 @@ def validate(model, loader, device, args, epoch: int, pgap=None):
         masks = batch["mask"].to(device, non_blocking=True)
         B, H, W = masks.shape
         img_emb, interms = model.get_image_embeddings(images)
+        mask_prompt = None
         if pgap is not None:
             if getattr(args, "pgap_two_stage", False):
                 pgap_pts, pgap_lbl, saliency = pgap(images)
-                img_emb = model.apply_saliency_modulation(img_emb, saliency)
+                if args.use_feature_mod:
+                    img_emb = model.apply_saliency_modulation(img_emb, saliency)
+                if args.use_mask_prompt:
+                    target_size = getattr(model.prompt_encoder, "mask_input_size", saliency.shape[-2:])
+                    mask_prompt = F.interpolate(
+                        saliency, size=target_size, mode="bilinear", align_corners=False
+                    )
                 pos_pts, pos_lbl = _select_topk_points(pgap_pts, pgap_lbl, args.pgap_stage1_top_k)
                 pts1 = pos_pts.unsqueeze(1).to(device)
                 lbl1 = pos_lbl.unsqueeze(1).to(device)
@@ -400,6 +464,7 @@ def validate(model, loader, device, args, epoch: int, pgap=None):
                     interms,
                     pts1,
                     lbl1,
+                    batched_masks=mask_prompt,
                     multimask_output=False,
                     input_h=H,
                     input_w=W,
@@ -417,7 +482,13 @@ def validate(model, loader, device, args, epoch: int, pgap=None):
                 pts, lbl = pts.to(device), lbl.to(device)
             else:
                 pgap_pts, pgap_lbl, saliency = _build_pgap_prompts(pgap, images, masks, args)
-                img_emb = model.apply_saliency_modulation(img_emb, saliency)
+                if args.use_feature_mod:
+                    img_emb = model.apply_saliency_modulation(img_emb, saliency)
+                if args.use_mask_prompt:
+                    target_size = getattr(model.prompt_encoder, "mask_input_size", saliency.shape[-2:])
+                    mask_prompt = F.interpolate(
+                        saliency, size=target_size, mode="bilinear", align_corners=False
+                    )
                 pts = pgap_pts.unsqueeze(1)
                 lbl = pgap_lbl.unsqueeze(1)
                 pts, lbl = pts.to(device), lbl.to(device)
@@ -436,6 +507,7 @@ def validate(model, loader, device, args, epoch: int, pgap=None):
             interms,
             pts,
             lbl,
+            batched_masks=mask_prompt,
             multimask_output=False,
             input_h=H,
             input_w=W,
@@ -502,6 +574,10 @@ def main():
     p.add_argument("--epochs", type=int, default=20)
     p.add_argument("--batch_size", type=int, default=4)
     p.add_argument("--workers", type=int, default=4)
+    p.add_argument("--use_grad_accum", action="store_true",
+                   help="Enable gradient accumulation to simulate larger batch size.")
+    p.add_argument("--accumulation_steps", type=int, default=1,
+                   help="Number of steps to accumulate gradients before optimizer step.")
     p.add_argument("--n_pos", type=int, default=4)
     p.add_argument("--n_neg", type=int, default=4)
     p.add_argument("--lr_head", type=float, default=1e-4)
@@ -546,6 +622,8 @@ def main():
     p.add_argument("--point_loss_oversample", type=float, default=3.0)
     p.add_argument("--point_loss_importance", type=float, default=0.75)
     p.add_argument("--point_loss_weight", type=float, default=0.3)
+    p.add_argument("--nwd_weight", type=float, default=0.0)
+    p.add_argument("--nwd_constant", type=float, default=12.0)
     p.add_argument("--boundary_prior_sampling", action="store_true")
     p.add_argument("--boundary_ratio", type=float, default=0.5)
     # Phase prompt generator (PGAP)
@@ -575,6 +653,10 @@ def main():
     p.add_argument("--pgap_stage2_neg", type=int, default=2)
     p.add_argument("--pgap_neg_points", type=int, default=0,
                    help="Number of random negative points to add to PGAP prompts.")
+    p.add_argument("--use_mask_prompt", action="store_true",
+                   help="Use PGAP saliency map as dense mask prompt.")
+    p.add_argument("--use_feature_mod", action="store_true",
+                   help="Apply PGAP saliency feature modulation on image embeddings.")
     p.add_argument("--val_thr_search", action="store_true")
     p.add_argument("--val_thr_min", type=float, default=0.35)
     p.add_argument("--val_thr_max", type=float, default=0.55)
@@ -587,6 +669,12 @@ def main():
                    help="If >0, use HQ token only for the first N epochs.")
     p.add_argument("--init_from_baseline", type=str, default=None,
                    help="Optional path to EfficientSAM baseline checkpoint to partially initialize from.")
+    p.add_argument("--use_fs_adapter", action="store_true",
+                   help="Enable frequency-spatial adapter inside ViT blocks.")
+    p.add_argument("--use_ms_fusion", action="store_true",
+                   help="Enable multi-scale fusion from intermediate ViT blocks.")
+    p.add_argument("--use_detail_enhancer", action="store_true",
+                   help="Enable Sobel detail enhancer on shallow features.")
     # Freeze/unfreeze strategy configs (align with train_sirst_hq.py)
     p.add_argument("--freeze_encoder_epochs", type=int, default=-1,
                    help="Freeze image encoder for N epochs first (<=0 to use epochs//4).")
@@ -647,6 +735,9 @@ def main():
         encoder_patch_embed_dim=192,
         encoder_num_heads=3,
         init_from_baseline=args.init_from_baseline,
+        use_adapter=args.use_fs_adapter,
+        use_ms_fusion=args.use_ms_fusion,
+        use_detail_enhancer=args.use_detail_enhancer,
     )
     # Attach frequency gates if requested
     if args.use_asg_hq and args.use_radial_gate_hq:
@@ -752,6 +843,19 @@ def main():
     # Freeze encoder first
     for p_ in model.image_encoder.parameters():
         p_.requires_grad = False
+    if args.use_fs_adapter:
+        try:
+            from efficient_sam.efficient_sam_encoder_hq import FSAdapter
+            fs_tensors = 0
+            for m in model.image_encoder.modules():
+                if isinstance(m, FSAdapter):
+                    for p in m.parameters():
+                        p.requires_grad = True
+                        fs_tensors += 1
+            if fs_tensors > 0:
+                log_line("Enabled FSAdapter params during encoder freeze.", args.log_file)
+        except Exception as e:
+            log_line(f"[warn] Failed to enable FSAdapter during freeze: {e}", args.log_file)
 
     # Configure which head params are trainable initially
     def mark_maskdecoder_stage1(md):
@@ -780,6 +884,10 @@ def main():
     head_params = [p for p in list(model.prompt_encoder.parameters()) + list(model.mask_decoder.parameters()) if p.requires_grad]
     if hasattr(model, "saliency_adapter") and model.saliency_adapter is not None:
         head_params += list(model.saliency_adapter.parameters())
+    if hasattr(model, "ms_aggregator") and model.ms_aggregator is not None:
+        head_params += list(model.ms_aggregator.parameters())
+    if hasattr(model, "detail_enhancer") and model.detail_enhancer is not None:
+        head_params += list(model.detail_enhancer.parameters())
     enc_params = [p_ for p_ in model.image_encoder.parameters() if p_.requires_grad]
 
     optimizer = torch.optim.AdamW([
@@ -813,6 +921,10 @@ def main():
             head_params = [p for p in list(model.prompt_encoder.parameters()) + list(model.mask_decoder.parameters()) if p.requires_grad]
             if hasattr(model, "saliency_adapter") and model.saliency_adapter is not None:
                 head_params += list(model.saliency_adapter.parameters())
+            if hasattr(model, "ms_aggregator") and model.ms_aggregator is not None:
+                head_params += list(model.ms_aggregator.parameters())
+            if hasattr(model, "detail_enhancer") and model.detail_enhancer is not None:
+                head_params += list(model.detail_enhancer.parameters())
             enc_params = [p_ for p_ in model.image_encoder.parameters() if p_.requires_grad]
             optimizer = torch.optim.AdamW([
                 {"params": head_params, "lr": args.lr_head},

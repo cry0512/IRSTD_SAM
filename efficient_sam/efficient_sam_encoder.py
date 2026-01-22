@@ -76,18 +76,52 @@ class Mlp(nn.Module):
         return x
 
 
+class FSAdapter(nn.Module):
+    def __init__(self, dim: int, scale: float = 0.0):
+        super().__init__()
+        self.scale = nn.Parameter(torch.tensor(float(scale)))
+        self.spatial_conv = nn.Sequential(
+            nn.Conv2d(dim, dim, kernel_size=3, padding=1, groups=dim, bias=False),
+            nn.GELU(),
+            nn.Conv2d(dim, dim, kernel_size=1, bias=False),
+        )
+        self.complex_weight = nn.Parameter(torch.randn(1, dim, 1, 1, 2) * 0.02)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, N, C = x.shape
+        H = int(math.sqrt(N))
+        W = H
+        assert H * W == N, "Input features must be square"
+        x_img = x.permute(0, 2, 1).reshape(B, C, H, W)
+        x_spatial = self.spatial_conv(x_img)
+        x_freq = torch.fft.rfft2(x_img, norm="ortho")
+        weight = torch.view_as_complex(self.complex_weight)
+        x_freq = x_freq * weight
+        x_spectral = torch.fft.irfft2(x_freq, s=(H, W), norm="ortho")
+        out = x_spatial + x_spectral
+        out = out.reshape(B, C, N).permute(0, 2, 1)
+        return self.scale * out
+
+
 class Block(nn.Module):
-    def __init__(self, dim, num_heads, mlp_ratio=4.0, qkv_bias=False, qk_scale=None, act_layer=nn.GELU):
+    def __init__(self, dim, num_heads, mlp_ratio=4.0, qkv_bias=False, qk_scale=None, act_layer=nn.GELU, use_adapter: bool = False):
         super().__init__()
         self.norm1 = nn.LayerNorm(dim, eps=1e-6)
         self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale)
         self.norm2 = nn.LayerNorm(dim, eps=1e-6)
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer)
+        self.use_adapter = bool(use_adapter)
+        if self.use_adapter:
+            self.adapter = FSAdapter(dim)
 
     def forward(self, x):
         x = x + self.attn(self.norm1(x))
-        x = x + self.mlp(self.norm2(x))
+        x_norm = self.norm2(x)
+        res = self.mlp(x_norm)
+        if self.use_adapter:
+            res = res + self.adapter(x_norm)
+        x = x + res
         return x
 
 
@@ -137,6 +171,9 @@ class ImageEncoderViT(nn.Module):
         ffc_fft_norm: str = "ortho",
         fftf_expansion: float = 3.0,
         fftf_patch_size: int = 8,
+        use_adapter: bool = False,
+        return_multi_scale: bool = False,
+        return_interm: bool = False,
     ) -> None:
         super().__init__()
         self.img_size = img_size
@@ -144,13 +181,18 @@ class ImageEncoderViT(nn.Module):
         self.transformer_output_dim = ([patch_embed_dim] + neck_dims)[-1]
         self.pretrain_use_cls_token = True
         pretrain_img_size = 224
+        self.return_multi_scale = bool(return_multi_scale)
+        self.return_interm = bool(return_interm)
+        self.ms_out_indices = [2, 5, 8, 11]
 
         self.patch_embed = PatchEmbed(img_size, patch_size, in_chans, patch_embed_dim)
         num_patches = (pretrain_img_size // patch_size) * (pretrain_img_size // patch_size)
         num_positions = num_patches + 1
         self.pos_embed = nn.Parameter(torch.zeros(1, num_positions, patch_embed_dim))
 
-        self.blocks = nn.ModuleList([Block(patch_embed_dim, num_heads, mlp_ratio, True) for _ in range(depth)])
+        self.blocks = nn.ModuleList([
+            Block(patch_embed_dim, num_heads, mlp_ratio, True, use_adapter=use_adapter) for _ in range(depth)
+        ])
 
         self.neck = nn.Sequential(
             nn.Conv2d(patch_embed_dim, neck_dims[0], kernel_size=1, bias=False),
@@ -167,7 +209,7 @@ class ImageEncoderViT(nn.Module):
         self.ffc = SpectralTransformLite(neck_dims[0], fu_kernel=ffc_fu_kernel, use_only_freq=ffc_use_only_freq, fft_norm=ffc_fft_norm) if use_ffc else None
         self.fftf = FFTformerDFFNLite(neck_dims[0], expansion=fftf_expansion, patch_size=fftf_patch_size) if use_fftformer else None
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor):
         assert x.shape[2] == self.img_size and x.shape[3] == self.img_size, "input image size must match self.img_size"
         x = self.patch_embed(x)
         # B C H W -> B H W C
@@ -176,8 +218,16 @@ class ImageEncoderViT(nn.Module):
         num_patches = x.shape[1]
         assert x.shape[2] == num_patches
         x = x.reshape(x.shape[0], num_patches * num_patches, x.shape[3])
-        for blk in self.blocks:
+        interm = None
+        multi_scale_feats = []
+        for i, blk in enumerate(self.blocks):
             x = blk(x)
+            if self.return_interm and i == 0:
+                x_grid = x.reshape(x.shape[0], num_patches, num_patches, x.shape[2])
+                interm = x_grid  # [B, H', W', C]
+            if self.return_multi_scale and i in self.ms_out_indices:
+                x_grid = x.reshape(x.shape[0], num_patches, num_patches, x.shape[2])
+                multi_scale_feats.append(x_grid.permute(0, 3, 1, 2))
         x = x.reshape(x.shape[0], num_patches, num_patches, x.shape[2])
         x = self.neck(x.permute(0, 3, 1, 2))
         if self.freq_gate is not None:
@@ -188,4 +238,6 @@ class ImageEncoderViT(nn.Module):
             x = x + self.ffc(x)
         if self.fftf is not None:
             x = x + self.fftf(x)
+        if self.return_multi_scale or self.return_interm:
+            return x, interm, multi_scale_feats
         return x

@@ -115,6 +115,95 @@ python -u train_sirst.py \
   --exp_name "$EXP" \
   >/dev/null 2>&1 &'
 
+-------------pgap模块的 DCT/无窗/动态阈值/边界屏蔽+显著性图特征调制--windows训练NUDT脚本
+$env:PYTHONUNBUFFERED=1
+$env:CUDA_VISIBLE_DEVICES="0"
+$ROOT="E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST"
+$SIZE=256; $BS=4; $EPOCHS=1000; $MODEL="vitt"; $KP=1; $TRAIN_DIR="50_50"
+$DATASET=(Split-Path $ROOT -Leaf); $SPLIT_TAG="_split-$TRAIN_DIR"
+$EXP="${DATASET}_model-${MODEL}_size${SIZE}_PGAP_DCT_MOD_nowin_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}"
+$kpFlag = if ($KP -eq 1) { "--keep_ratio_pad" } else { "" }
+$TS = Get-Date -Format "yyyyMMdd_HHmmss"
+$LOG_ROOT = "outputs_sam_sirst_logs\${EXP}_$TS"; New-Item -ItemType Directory -Force -Path $LOG_ROOT | Out-Null
+$LOG_FILE = "$LOG_ROOT\train_$TS.log"
+python -u train_sirst.py `
+  --data_root "$ROOT" --train_txt "$TRAIN_DIR\train.txt" --val_txt "$TRAIN_DIR\test.txt" `
+  --size $SIZE $kpFlag --batch_size $BS --epochs $EPOCHS --model $MODEL `
+  --val_thr_search `
+  --use_pgap --pgap_use_dct --pgap_no_window `
+  --pgap_dyn_quantile 0.9 --pgap_dyn_mode max `
+  --pgap_border_width 12 `
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 `
+  --exp_name "$EXP" 2>&1 | Tee-Object -FilePath $LOG_FILE
+
+-------------pgap模块的 DCT/无窗/动态阈值/边界屏蔽+显著性图特征调制
+-------------mask prompt+--ubuntu训练NUDT脚本
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=0;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_PGAP_DCT_MOD_nowin_maskprompt_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+TS=$(date +%Y%m%d_%H%M%S); LOG_ROOT="outputs_sam_sirst_logs/${EXP}_${TS}"; mkdir -p "$LOG_ROOT";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --val_thr_search \
+  --use_pgap --use_mask_prompt --pgap_use_dct --pgap_no_window \
+  --pgap_dyn_quantile 0.9 --pgap_dyn_mode max \
+  --pgap_border_width 12 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --exp_name "$EXP" \
+  2>&1 | tee "$LOG_ROOT/train_${TS}.log"' >/dev/null 2>&1 &
+
+
+-------------pgap模块的 DCT/无窗/动态阈值/边界屏蔽+显著性图特征调制
+-------------mask prompt+msdetail--ubuntu训练NUDT脚本
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=1;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_PGAP_DCT_MOD_nowin_maskprompt_msdetail_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --val_thr_search \
+  --use_pgap --use_mask_prompt --pgap_use_dct --pgap_no_window \
+  --pgap_dyn_quantile 0.9 --pgap_dyn_mode max \
+  --pgap_border_width 12 \
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 \
+  --use_ms_fusion --use_detail_enhancer \
+  --exp_name "$EXP" \
+  >/dev/null 2>&1 &'
+
+
+-------------pgap模块的 DCT/无窗/动态阈值/边界屏蔽+显著性图特征调制
+-------------mask prompt+msdetail--windows训练NUDT脚本
+$env:PYTHONUNBUFFERED=1
+$env:CUDA_VISIBLE_DEVICES="0"
+$ROOT="E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST"
+$SIZE=256; $BS=4; $EPOCHS=1000; $MODEL="vitt"; $KP=1; $TRAIN_DIR="50_50"
+$DATASET=(Split-Path $ROOT -Leaf); $SPLIT_TAG="_split-$TRAIN_DIR"
+$EXP="${DATASET}_model-${MODEL}_size${SIZE}_PGAP_DCT_MOD_nowin_maskprompt_msdetail_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}"
+$kpFlag = if ($KP -eq 1) { "--keep_ratio_pad" } else { "" }
+$TS = Get-Date -Format "yyyyMMdd_HHmmss"
+$LOG_ROOT = "outputs_sam_sirst_logs\${EXP}_$TS"; New-Item -ItemType Directory -Force -Path $LOG_ROOT | Out-Null
+$LOG_FILE = "$LOG_ROOT\train_$TS.log"
+python -u train_sirst.py `
+  --data_root "$ROOT" --train_txt "$TRAIN_DIR\train.txt" --val_txt "$TRAIN_DIR\test.txt" `
+  --size $SIZE $kpFlag --batch_size $BS --epochs $EPOCHS --model $MODEL `
+  --val_thr_search `
+  --use_pgap --use_mask_prompt --pgap_use_dct --pgap_no_window `
+  --pgap_dyn_quantile 0.9 --pgap_dyn_mode max `
+  --pgap_border_width 12 `
+  --pgap_blur_kernel 5 --pgap_blur_sigma 1.0 `
+  --use_ms_fusion --use_detail_enhancer `
+  --exp_name "$EXP" 2>&1 | Tee-Object -FilePath $LOG_FILE
+
+
+
+
 -------------pgap模块的 DCT/无窗/动态阈值/边界屏蔽--ubuntu训练1K脚本
 nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=1;
 ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/IRSTD-1k";

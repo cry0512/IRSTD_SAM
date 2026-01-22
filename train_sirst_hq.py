@@ -2,6 +2,7 @@
 import time
 import argparse
 import json
+from contextlib import nullcontext
 
 import torch
 import torch.nn as nn
@@ -12,19 +13,42 @@ try:
     from skimage import measure
 except Exception:
     measure = None
-# Cross-version AMP import
+# Cross-version AMP import (PyTorch>=2.0 uses torch.amp, older uses torch.cuda.amp)
 try:
-    from torch.amp import autocast as _autocast_new, GradScaler as _GradScaler_new
+    from torch.amp import autocast as _autocast_new, GradScaler as _GradScaler_new  # type: ignore
     def autocast_ctx(device: str):
-        return _autocast_new("cuda" if device.startswith("cuda") and torch.cuda.is_available() else "cpu")
+        if device.startswith("cuda") and torch.cuda.is_available():
+            return _autocast_new("cuda")
+        return nullcontext()
     def make_scaler(device: str):
-        return _GradScaler_new("cuda" if device == "cuda" and torch.cuda.is_available() else "cpu")
+        if device == "cuda" and torch.cuda.is_available():
+            return _GradScaler_new("cuda")
+        class _DummyScaler:
+            def scale(self, loss):
+                return loss
+            def step(self, optimizer):
+                optimizer.step()
+            def update(self):
+                pass
+        return _DummyScaler()
 except Exception:
-    from torch.cuda.amp import autocast as _autocast_old, GradScaler as _GradScaler_old
+    from torch.cuda.amp import autocast as _autocast_old, GradScaler as _GradScaler_old  # type: ignore
     def autocast_ctx(device: str):
-        return _autocast_old()
+        if device.startswith("cuda") and torch.cuda.is_available():
+            return _autocast_old()
+        return nullcontext()
     def make_scaler(device: str):
-        return _GradScaler_old()
+        if torch.cuda.is_available():
+            return _GradScaler_old()
+        class _DummyScaler:
+            def scale(self, loss):
+                return loss
+            def step(self, optimizer):
+                optimizer.step()
+            def update(self):
+                pass
+        return _DummyScaler()
+
 
 from sirst_dataset import make_loader
 from efficient_sam.efficient_sam_hq import build_efficient_sam_hq
@@ -35,6 +59,45 @@ def dice_loss(logits, target):
     inter = (prob * target).sum(dim=(1, 2, 3))
     denom = prob.sum(dim=(1, 2, 3)) + target.sum(dim=(1, 2, 3))
     return 1 - ((2 * inter + 1.0) / (denom + 1.0)).mean()
+
+
+class NWDLoss(nn.Module):
+    def __init__(self, constant: float = 12.0, eps: float = 1e-6):
+        super().__init__()
+        self.C = float(constant)
+        self.eps = float(eps)
+
+    def get_gaussian_params(self, mask, grid_x, grid_y):
+        mass = mask.sum(dim=(2, 3), keepdim=True) + self.eps
+        mu_x = (mask * grid_x).sum(dim=(2, 3), keepdim=True) / mass
+        mu_y = (mask * grid_y).sum(dim=(2, 3), keepdim=True) / mass
+        var_x = (mask * (grid_x - mu_x).pow(2)).sum(dim=(2, 3), keepdim=True) / mass
+        var_y = (mask * (grid_y - mu_y).pow(2)).sum(dim=(2, 3), keepdim=True) / mass
+        sigma_x = torch.sqrt(var_x + self.eps)
+        sigma_y = torch.sqrt(var_y + self.eps)
+        return mu_x, mu_y, sigma_x, sigma_y
+
+    def forward(self, preds, targets):
+        probs = torch.sigmoid(preds)
+        B, _, H, W = probs.shape
+        device = probs.device
+        y = torch.arange(H, device=device, dtype=probs.dtype) + 0.5
+        x = torch.arange(W, device=device, dtype=probs.dtype) + 0.5
+        try:
+            grid_y, grid_x = torch.meshgrid(y, x, indexing="ij")
+        except TypeError:
+            grid_y, grid_x = torch.meshgrid(y, x)
+        valid_mask = (targets.sum(dim=(2, 3)) > 0).float().view(B)
+
+        mu_x_p, mu_y_p, sig_x_p, sig_y_p = self.get_gaussian_params(probs, grid_x, grid_y)
+        mu_x_t, mu_y_t, sig_x_t, sig_y_t = self.get_gaussian_params(targets, grid_x, grid_y)
+
+        wd2 = (mu_x_p - mu_x_t).pow(2) + (mu_y_p - mu_y_t).pow(2) + \
+              (sig_x_p - sig_x_t).pow(2) + (sig_y_p - sig_y_t).pow(2)
+        wd2 = wd2.view(B)
+        nwd = torch.exp(-torch.sqrt(wd2 + self.eps) / self.C)
+        loss = 1.0 - nwd
+        return (loss * valid_mask).sum() / (valid_mask.sum() + self.eps)
 
 
 def radial_frequency_profile(mask: torch.Tensor, num_bins: int) -> torch.Tensor:
@@ -291,6 +354,8 @@ def train_one_epoch(model, loader, optimizer, scaler, device, epoch, args, pgap=
     if pgap is not None:
         pgap.train()
     bce = nn.BCEWithLogitsLoss()
+    nwd_weight = float(getattr(args, "nwd_weight", 0.0))
+    nwd_criterion = NWDLoss(constant=float(getattr(args, "nwd_constant", 12.0))).to(device) if nwd_weight > 0.0 else None
     meter_loss, n = 0.0, 0
     for batch in loader:
         images = batch["image"].to(device, non_blocking=True)
@@ -299,9 +364,16 @@ def train_one_epoch(model, loader, optimizer, scaler, device, epoch, args, pgap=
 
         with autocast_ctx(device):
             img_emb, interms = model.get_image_embeddings(images)
+            mask_prompt = None
             if pgap is not None:
                 pgap_pts, pgap_lbl, saliency = _build_pgap_prompts(pgap, images, masks, args)
-                img_emb = model.apply_saliency_modulation(img_emb, saliency)
+                if args.use_feature_mod:
+                    img_emb = model.apply_saliency_modulation(img_emb, saliency)
+                if args.use_mask_prompt:
+                    target_size = getattr(model.prompt_encoder, "mask_input_size", saliency.shape[-2:])
+                    mask_prompt = F.interpolate(
+                        saliency, size=target_size, mode="bilinear", align_corners=False
+                    )
                 pts = pgap_pts.unsqueeze(1)
                 lbl = pgap_lbl.unsqueeze(1)
                 pts, lbl = pts.to(device), lbl.to(device)
@@ -321,6 +393,7 @@ def train_one_epoch(model, loader, optimizer, scaler, device, epoch, args, pgap=
                 interms,
                 pts,
                 lbl,
+                batched_masks=mask_prompt,
                 multimask_output=False,
                 input_h=H,
                 input_w=W,
@@ -330,6 +403,8 @@ def train_one_epoch(model, loader, optimizer, scaler, device, epoch, args, pgap=
             )
             logits = pred_masks[:, 0, 0, ...].unsqueeze(1)
             loss = bce(logits, masks.unsqueeze(1)) + dice_loss(logits, masks.unsqueeze(1))
+            if nwd_criterion is not None:
+                loss = loss + nwd_weight * nwd_criterion(logits, masks.unsqueeze(1))
             freq_weight = float(getattr(args, "freq_consistency_weight", 0.0))
             if freq_weight > 0.0:
                 bins = max(2, int(getattr(args, "freq_consistency_bins", 32)))
@@ -387,10 +462,17 @@ def validate(model, loader, device, args, epoch: int, pgap=None):
         masks = batch["mask"].to(device, non_blocking=True)
         B, H, W = masks.shape
         img_emb, interms = model.get_image_embeddings(images)
+        mask_prompt = None
         if pgap is not None:
             if getattr(args, "pgap_two_stage", False):
                 pgap_pts, pgap_lbl, saliency = pgap(images)
-                img_emb = model.apply_saliency_modulation(img_emb, saliency)
+                if args.use_feature_mod:
+                    img_emb = model.apply_saliency_modulation(img_emb, saliency)
+                if args.use_mask_prompt:
+                    target_size = getattr(model.prompt_encoder, "mask_input_size", saliency.shape[-2:])
+                    mask_prompt = F.interpolate(
+                        saliency, size=target_size, mode="bilinear", align_corners=False
+                    )
                 pos_pts, pos_lbl = _select_topk_points(pgap_pts, pgap_lbl, args.pgap_stage1_top_k)
                 pts1 = pos_pts.unsqueeze(1).to(device)
                 lbl1 = pos_lbl.unsqueeze(1).to(device)
@@ -400,6 +482,7 @@ def validate(model, loader, device, args, epoch: int, pgap=None):
                     interms,
                     pts1,
                     lbl1,
+                    batched_masks=mask_prompt,
                     multimask_output=False,
                     input_h=H,
                     input_w=W,
@@ -417,7 +500,13 @@ def validate(model, loader, device, args, epoch: int, pgap=None):
                 pts, lbl = pts.to(device), lbl.to(device)
             else:
                 pgap_pts, pgap_lbl, saliency = _build_pgap_prompts(pgap, images, masks, args)
-                img_emb = model.apply_saliency_modulation(img_emb, saliency)
+                if args.use_feature_mod:
+                    img_emb = model.apply_saliency_modulation(img_emb, saliency)
+                if args.use_mask_prompt:
+                    target_size = getattr(model.prompt_encoder, "mask_input_size", saliency.shape[-2:])
+                    mask_prompt = F.interpolate(
+                        saliency, size=target_size, mode="bilinear", align_corners=False
+                    )
                 pts = pgap_pts.unsqueeze(1)
                 lbl = pgap_lbl.unsqueeze(1)
                 pts, lbl = pts.to(device), lbl.to(device)
@@ -436,6 +525,7 @@ def validate(model, loader, device, args, epoch: int, pgap=None):
             interms,
             pts,
             lbl,
+            batched_masks=mask_prompt,
             multimask_output=False,
             input_h=H,
             input_w=W,
@@ -516,6 +606,12 @@ def main():
                    help="If >0, use HQ token only for the first N epochs.")
     p.add_argument("--init_from_baseline", type=str, default=None,
                    help="Optional path to EfficientSAM baseline checkpoint to partially initialize from.")
+    p.add_argument("--use_fs_adapter", action="store_true",
+                   help="Enable frequency-spatial adapter inside ViT blocks.")
+    p.add_argument("--use_ms_fusion", action="store_true",
+                   help="Enable multi-scale fusion from intermediate ViT blocks.")
+    p.add_argument("--use_detail_enhancer", action="store_true",
+                   help="Enable Sobel detail enhancer on shallow features.")
     # Radial gate for HQ-SAM (optional)
     p.add_argument("--use_radial_gate_hq", action="store_true", help="Enable RadialFreqGate for HQ-SAM.")
     p.add_argument("--rgate_loc", type=str, default="encoder", choices=["encoder", "decoder", "both"],
@@ -554,6 +650,10 @@ def main():
                    help="Importance sample ratio for uncertain points.")
     p.add_argument("--point_loss_weight", type=float, default=0.3,
                    help="Weight for point loss term.")
+    p.add_argument("--nwd_weight", type=float, default=0.0,
+                   help="Weight for NWD loss (0 to disable).")
+    p.add_argument("--nwd_constant", type=float, default=12.0,
+                   help="Normalization constant for NWD loss.")
     p.add_argument("--boundary_prior_sampling", action="store_true",
                    help="Prefer sampling points near GT boundary.")
     p.add_argument("--boundary_ratio", type=float, default=0.5,
@@ -574,6 +674,8 @@ def main():
     p.add_argument("--pgap_no_dynamic_topk", action="store_true")
     p.add_argument("--pgap_min_top_k", type=int, default=1)
     p.add_argument("--pgap_use_dct", action="store_true")
+    p.add_argument("--use_feature_mod", action="store_true",
+                   help="Use PGAP saliency to modulate image embeddings.")
     p.add_argument("--pgap_label_by_gt", action="store_true",
                    help="Use GT to relabel PGAP points: inside=pos, outside=neg.")
     p.add_argument("--pgap_min_pos", type=int, default=1)
@@ -583,6 +685,8 @@ def main():
     p.add_argument("--pgap_stage1_top_k", type=int, default=1)
     p.add_argument("--pgap_stage1_thr", type=float, default=0.5)
     p.add_argument("--pgap_stage2_neg", type=int, default=2)
+    p.add_argument("--use_mask_prompt", action="store_true",
+                   help="Use PGAP saliency map as dense mask prompt.")
     p.add_argument("--val_thr_search", action="store_true",
                    help="Enable validation threshold grid search.")
     p.add_argument("--val_thr_min", type=float, default=0.35)
@@ -654,6 +758,9 @@ def main():
         encoder_patch_embed_dim=192,
         encoder_num_heads=3,
         init_from_baseline=args.init_from_baseline,
+        use_adapter=args.use_fs_adapter,
+        use_ms_fusion=args.use_ms_fusion,
+        use_detail_enhancer=args.use_detail_enhancer,
     )
     # Attach frequency gates if requested
     if args.use_asg_hq and args.use_radial_gate_hq:
@@ -759,6 +866,19 @@ def main():
     # Stage-1: freeze image encoder
     for p_ in model.image_encoder.parameters():
         p_.requires_grad = False
+    if args.use_fs_adapter:
+        try:
+            from efficient_sam.efficient_sam_encoder_hq import FSAdapter
+            fs_tensors = 0
+            for m in model.image_encoder.modules():
+                if isinstance(m, FSAdapter):
+                    for p in m.parameters():
+                        p.requires_grad = True
+                        fs_tensors += 1
+            if fs_tensors > 0:
+                log_line("Enabled FSAdapter params during encoder freeze.", args.log_file)
+        except Exception as e:
+            log_line(f"[warn] Failed to enable FSAdapter during freeze: {e}", args.log_file)
 
     # Configure which head params are trainable initially
     # Follow HQ-SAM: only train HQ-specific layers by default
@@ -789,6 +909,10 @@ def main():
     head_params = [p for p in list(model.prompt_encoder.parameters()) + list(model.mask_decoder.parameters()) if p.requires_grad]
     if hasattr(model, "saliency_adapter") and model.saliency_adapter is not None:
         head_params += list(model.saliency_adapter.parameters())
+    if hasattr(model, "ms_aggregator") and model.ms_aggregator is not None:
+        head_params += list(model.ms_aggregator.parameters())
+    if hasattr(model, "detail_enhancer") and model.detail_enhancer is not None:
+        head_params += list(model.detail_enhancer.parameters())
     enc_params = [p_ for p_ in model.image_encoder.parameters() if p_.requires_grad]
 
     optimizer = torch.optim.AdamW(
@@ -826,6 +950,10 @@ def main():
             head_params = [p for p in list(model.prompt_encoder.parameters()) + list(model.mask_decoder.parameters()) if p.requires_grad]
             if hasattr(model, "saliency_adapter") and model.saliency_adapter is not None:
                 head_params += list(model.saliency_adapter.parameters())
+            if hasattr(model, "ms_aggregator") and model.ms_aggregator is not None:
+                head_params += list(model.ms_aggregator.parameters())
+            if hasattr(model, "detail_enhancer") and model.detail_enhancer is not None:
+                head_params += list(model.detail_enhancer.parameters())
             enc_params = [p_ for p_ in model.image_encoder.parameters() if p_.requires_grad]
             optimizer = torch.optim.AdamW(
                 [
@@ -857,12 +985,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
 
 
 

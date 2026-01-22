@@ -5,7 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import math
-from typing import Any, List, Tuple, Type
+from typing import Any, List, Tuple, Type, Optional
 
 import torch
 import torch.nn.functional as F
@@ -15,6 +15,76 @@ from torch import nn, Tensor
 from .efficient_sam_decoder import MaskDecoder, PromptEncoder
 from .efficient_sam_encoder import ImageEncoderViT
 from .two_way_transformer import TwoWayAttentionBlock, TwoWayTransformer
+
+class LayerNorm2d(nn.Module):
+    def __init__(self, num_channels: int, eps: float = 1e-6) -> None:
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(num_channels))
+        self.bias = nn.Parameter(torch.zeros(num_channels))
+        self.eps = eps
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        u = x.mean(1, keepdim=True)
+        s = (x - u).pow(2).mean(1, keepdim=True)
+        x = (x - u) / torch.sqrt(s + self.eps)
+        x = self.weight[:, None, None] * x + self.bias[:, None, None]
+        return x
+
+
+class SobelDetailEnhancer(nn.Module):
+    def __init__(self, dim: int):
+        super().__init__()
+        sobel_x = torch.tensor(
+            [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32
+        ).view(1, 1, 3, 3)
+        sobel_y = torch.tensor(
+            [[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32
+        ).view(1, 1, 3, 3)
+        self.register_buffer("sobel_x", sobel_x.repeat(dim, 1, 1, 1))
+        self.register_buffer("sobel_y", sobel_y.repeat(dim, 1, 1, 1))
+        self.dim = int(dim)
+        self.fusion = nn.Sequential(
+            nn.Conv2d(dim * 2, dim, kernel_size=1),
+            nn.BatchNorm2d(dim),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        grad_x = F.conv2d(x, self.sobel_x, padding=1, groups=self.dim)
+        grad_y = F.conv2d(x, self.sobel_y, padding=1, groups=self.dim)
+        magnitude = torch.sqrt(grad_x.pow(2) + grad_y.pow(2) + 1e-6)
+        out = torch.cat([x, magnitude], dim=1)
+        return self.fusion(out)
+
+
+class MultiScaleAggregator(nn.Module):
+    def __init__(self, in_dim: int, out_dim: int, num_levels: int = 4):
+        super().__init__()
+        self.convs = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv2d(in_dim, out_dim, kernel_size=1),
+                nn.BatchNorm2d(out_dim),
+                nn.ReLU(inplace=True),
+            ) for _ in range(num_levels)
+        ])
+        self.fusion_conv = nn.Sequential(
+            nn.Conv2d(out_dim * num_levels, out_dim, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_dim),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_dim, out_dim, kernel_size=1),
+        )
+
+    def forward(self, feats):
+        if not feats:
+            return None
+        use_levels = min(len(feats), len(self.convs))
+        processed = [self.convs[i](feats[i]) for i in range(use_levels)]
+        if len(processed) < len(self.convs):
+            b, c, h, w = processed[0].shape
+            for _ in range(len(self.convs) - len(processed)):
+                processed.append(torch.zeros((b, c, h, w), device=processed[0].device, dtype=processed[0].dtype))
+        out = torch.cat(processed, dim=1)
+        return self.fusion_conv(out)
 
 class EfficientSam(nn.Module):
     mask_threshold: float = 0.0
@@ -28,6 +98,8 @@ class EfficientSam(nn.Module):
         mask_decoder: MaskDecoder,
         pixel_mean: List[float] = [0.485, 0.456, 0.406],
         pixel_std: List[float] = [0.229, 0.224, 0.225],
+        use_ms_fusion: bool = False,
+        use_detail_enhancer: bool = False,
     ) -> None:
         """
         SAM predicts object masks from an image and input prompts.
@@ -64,6 +136,36 @@ class EfficientSam(nn.Module):
             nn.Conv2d(mid_dim, neck_dim, kernel_size=1),
             nn.Sigmoid(),
         )
+        embed_dim = int(getattr(self.prompt_encoder, "embed_dim", neck_dim))
+        mask_in_chans = 16
+        self.mask_input_size = (
+            4 * self.image_encoder.image_embedding_size,
+            4 * self.image_encoder.image_embedding_size,
+        )
+        self.mask_prompt_downscaling = nn.Sequential(
+            nn.Conv2d(1, mask_in_chans // 4, kernel_size=2, stride=2),
+            LayerNorm2d(mask_in_chans // 4),
+            nn.GELU(),
+            nn.Conv2d(mask_in_chans // 4, mask_in_chans, kernel_size=2, stride=2),
+            LayerNorm2d(mask_in_chans),
+            nn.GELU(),
+            nn.Conv2d(mask_in_chans, embed_dim, kernel_size=1),
+        )
+        self.use_ms_fusion = bool(use_ms_fusion)
+        self.use_detail_enhancer = bool(use_detail_enhancer)
+        try:
+            patch_dim = int(self.image_encoder.patch_embed.proj.out_channels)
+        except Exception:
+            patch_dim = int(getattr(self.image_encoder, "transformer_output_dim", neck_dim))
+        if self.use_ms_fusion:
+            self.ms_aggregator = MultiScaleAggregator(in_dim=patch_dim, out_dim=neck_dim)
+        if self.use_detail_enhancer:
+            self.detail_enhancer = SobelDetailEnhancer(patch_dim)
+            self.detail_proj = nn.Sequential(
+                nn.Conv2d(patch_dim, neck_dim, kernel_size=1),
+                nn.BatchNorm2d(neck_dim),
+                nn.ReLU(inplace=True),
+            )
 
     @torch.jit.export
     def predict_masks(
@@ -76,6 +178,7 @@ class EfficientSam(nn.Module):
         input_w: int,
         output_h: int = -1,
         output_w: int = -1,
+        batched_masks: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Predicts masks given image embeddings and prompts. This only runs the decoder.
@@ -93,6 +196,14 @@ class EfficientSam(nn.Module):
         batch_size, max_num_queries, num_pts, _ = batched_points.shape
         num_pts = batched_points.shape[2]
         rescaled_batched_points = self.get_rescaled_pts(batched_points, input_h, input_w)
+        if batched_masks is not None:
+            if batched_masks.dim() == 3:
+                batched_masks = batched_masks.unsqueeze(1)
+            if batched_masks.shape[0] == batch_size * max_num_queries:
+                bq, _, mh, mw = batched_masks.shape
+                batched_masks = batched_masks.view(batch_size, max_num_queries, 1, mh, mw).mean(dim=1)
+            elif batched_masks.shape[0] != batch_size:
+                raise ValueError("batched_masks must have batch size B or B*Q to match prompts.")
 
         if num_pts > self.decoder_max_num_input_points:
             rescaled_batched_points = rescaled_batched_points[
@@ -127,6 +238,10 @@ class EfficientSam(nn.Module):
             sparse_embeddings.shape[1],
             sparse_embeddings.shape[2],
         )
+        if batched_masks is not None:
+            dense_prompt = self.mask_prompt_downscaling(batched_masks)
+            if dense_prompt.shape[-2:] == image_embeddings.shape[-2:]:
+                image_embeddings = image_embeddings + dense_prompt
         low_res_masks, iou_predictions = self.mask_decoder(
             image_embeddings,
             self.prompt_encoder.get_dense_pe(),
@@ -190,7 +305,28 @@ class EfficientSam(nn.Module):
           The last embedding corresponds to the final layer.
         """
         batched_images = self.preprocess(batched_images)
-        return self.image_encoder(batched_images)
+        out = self.image_encoder(batched_images)
+        if isinstance(out, (tuple, list)) and len(out) == 3:
+            image_embeddings, interm, ms_feats = out
+        elif isinstance(out, (tuple, list)) and len(out) == 2:
+            image_embeddings, interm = out
+            ms_feats = []
+        else:
+            image_embeddings = out
+            interm = None
+            ms_feats = []
+        if self.use_ms_fusion and ms_feats:
+            fused = self.ms_aggregator(ms_feats)
+            if fused is not None:
+                image_embeddings = image_embeddings + fused
+        if self.use_detail_enhancer and interm is not None:
+            detail = interm.permute(0, 3, 1, 2)
+            detail = self.detail_enhancer(detail)
+            detail = self.detail_proj(detail)
+            if detail.shape[-2:] != image_embeddings.shape[-2:]:
+                detail = F.interpolate(detail, size=image_embeddings.shape[-2:], mode="bilinear", align_corners=False)
+            image_embeddings = image_embeddings + detail
+        return image_embeddings
 
     def apply_saliency_modulation(self, image_embeddings: torch.Tensor, saliency_map: torch.Tensor) -> torch.Tensor:
         if saliency_map is None:
@@ -251,7 +387,14 @@ class EfficientSam(nn.Module):
         return (x - self.pixel_mean) / self.pixel_std
 
 
-def build_efficient_sam(encoder_patch_embed_dim, encoder_num_heads, checkpoint=None):
+def build_efficient_sam(
+    encoder_patch_embed_dim,
+    encoder_num_heads,
+    checkpoint=None,
+    use_adapter: bool = False,
+    use_ms_fusion: bool = False,
+    use_detail_enhancer: bool = False,
+):
     img_size = 1024
     encoder_patch_size = 16
     encoder_depth = 12
@@ -286,6 +429,9 @@ def build_efficient_sam(encoder_patch_embed_dim, encoder_num_heads, checkpoint=N
         mlp_ratio=encoder_mlp_ratio,
         neck_dims=encoder_neck_dims,
         act_layer=activation_fn,
+        use_adapter=use_adapter,
+        return_multi_scale=use_ms_fusion,
+        return_interm=use_detail_enhancer,
     )
 
     image_embedding_size = image_encoder.image_embedding_size
@@ -319,10 +465,15 @@ def build_efficient_sam(encoder_patch_embed_dim, encoder_num_heads, checkpoint=N
         ),
         pixel_mean=[0.485, 0.456, 0.406],
         pixel_std=[0.229, 0.224, 0.225],
+        use_ms_fusion=use_ms_fusion,
+        use_detail_enhancer=use_detail_enhancer,
     )
     if checkpoint is not None:
         with open(checkpoint, "rb") as f:
             state_dict = torch.load(f, map_location="cpu")
-        sam.load_state_dict(state_dict["model"])
+        src_sd = state_dict["model"] if isinstance(state_dict, dict) and "model" in state_dict else state_dict
+        missing, unexpected = sam.load_state_dict(src_sd, strict=False)
+        if missing or unexpected:
+            print(f"[build_efficient_sam] Missing keys: {len(missing)}, unexpected: {len(unexpected)}")
     return sam
 
