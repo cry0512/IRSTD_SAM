@@ -1,7 +1,7 @@
 import os
 import random
 import re
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 
 import numpy as np
 from PIL import Image
@@ -17,6 +17,122 @@ import torchvision.transforms.functional as TF
 
 IMG_EXTS = [".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"]
 POINT_EXTS = [".txt"]
+
+# ===================== SCTransNet-style preprocessing helpers =====================
+
+def get_img_norm_cfg(dataset_name: str) -> Dict[str, float]:
+    """
+    Get dataset-specific normalization config (mean/std for 16-bit grayscale).
+    Based on SCTransNet's get_img_norm_cfg.
+    """
+    # Default values for common IRSTD datasets
+    norm_configs = {
+        'NUDT-SIRST': {'mean': 107.80905151367188, 'std': 33.02274703979492},
+        'NUAA-SIRST': {'mean': 101.06385803222656, 'std': 56.520484924316406},
+        'IRSTD-1k': {'mean': 87.37223052978516, 'std': 39.30812072753906},
+        'SIRST3': {'mean': 100.0, 'std': 50.0},  # Approximate
+    }
+    # Try to match dataset name
+    for key in norm_configs:
+        if key.lower() in dataset_name.lower():
+            return norm_configs[key]
+    # Default fallback
+    return {'mean': 100.0, 'std': 50.0}
+
+
+def normalize_grayscale(img: np.ndarray, cfg: Dict[str, float]) -> np.ndarray:
+    """
+    Normalize grayscale image using dataset statistics.
+    Based on SCTransNet's Normalized function.
+    """
+    return (img - cfg['mean']) / cfg['std']
+
+
+def random_crop_with_target(img: np.ndarray, mask: np.ndarray, patch_size: int, 
+                            pos_prob: float = 0.5) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Random crop with preference for regions containing targets.
+    Based on SCTransNet's random_crop.
+    
+    Args:
+        img: Grayscale image [H, W]
+        mask: Binary mask [H, W]
+        patch_size: Output patch size
+        pos_prob: Probability of cropping region containing target
+    """
+    h, w = img.shape[:2]
+    
+    # Pad if image is smaller than patch_size
+    if h < patch_size or w < patch_size:
+        pad_h = max(0, patch_size - h)
+        pad_w = max(0, patch_size - w)
+        img = np.pad(img, ((0, pad_h), (0, pad_w)), mode='reflect')
+        mask = np.pad(mask, ((0, pad_h), (0, pad_w)), mode='constant', constant_values=0)
+        h, w = img.shape[:2]
+    
+    # Find target positions
+    target_coords = np.argwhere(mask > 0.5)
+    
+    if len(target_coords) > 0 and random.random() < pos_prob:
+        # Crop around a random target pixel
+        idx = random.randint(0, len(target_coords) - 1)
+        cy, cx = target_coords[idx]
+        # Random offset to include target
+        y_start = max(0, min(h - patch_size, cy - random.randint(0, patch_size - 1)))
+        x_start = max(0, min(w - patch_size, cx - random.randint(0, patch_size - 1)))
+    else:
+        # Random crop
+        y_start = random.randint(0, h - patch_size)
+        x_start = random.randint(0, w - patch_size)
+    
+    img_patch = img[y_start:y_start + patch_size, x_start:x_start + patch_size]
+    mask_patch = mask[y_start:y_start + patch_size, x_start:x_start + patch_size]
+    
+    return img_patch, mask_patch
+
+
+def augment_sctransnet(img: np.ndarray, mask: np.ndarray, 
+                       use_noise: bool = False, use_gamma: bool = False
+                       ) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    SCTransNet-style augmentation: flips + optional noise/gamma.
+    
+    Args:
+        img: Grayscale image [H, W]
+        mask: Binary mask [H, W]
+        use_noise: Add Gaussian noise
+        use_gamma: Apply random gamma correction
+    """
+    # Horizontal flip
+    if random.random() < 0.5:
+        img = img[::-1, :].copy()
+        mask = mask[::-1, :].copy()
+    
+    # Vertical flip
+    if random.random() < 0.5:
+        img = img[:, ::-1].copy()
+        mask = mask[:, ::-1].copy()
+    
+    # Transpose
+    if random.random() < 0.5:
+        img = img.transpose(1, 0).copy()
+        mask = mask.transpose(1, 0).copy()
+    
+    # Gaussian noise
+    if use_noise and random.random() < 0.5:
+        noise = np.random.normal(0, 0.03, img.shape).astype(np.float32)
+        img = img + noise
+    
+    # Gamma correction  
+    if use_gamma and random.random() < 0.5:
+        minm = img.min()
+        rng = img.max() - minm + 1e-6
+        gamma = np.random.uniform(0.5, 1.6)
+        img = np.power((img - minm) / rng, gamma) * rng + minm
+    
+    return img, mask
+
+# ==================================================================================
 
 
 def _find_with_exts(root: str, name: str, exts: List[str]) -> Optional[str]:
@@ -92,6 +208,12 @@ class SIRSTDataset(Dataset):
       - split txt (train/test) with lines of image prefixes (without extension)
       - images/ and masks/ folders with matching filenames
       - optional points/ folder with per-image .txt: "x y [label]" in original pixels
+    
+    SCTransNet-style preprocessing (sctransnet_preproc=True):
+      - 16-bit grayscale reading with dataset-specific normalization
+      - Random crop patches instead of full-image resize
+      - Enhanced augmentation: flip + transpose + optional noise/gamma
+      - Single-channel output [1, H, W]
     """
 
     def __init__(
@@ -110,6 +232,14 @@ class SIRSTDataset(Dataset):
         points_default_label: int = 1,
         points_required: bool = False,
         points_max: int = 0,
+        # SCTransNet-style preprocessing options
+        sctransnet_preproc: bool = False,
+        sc_use_noise: bool = False,
+        sc_use_gamma: bool = False,
+        sc_pos_prob: float = 0.5,
+        sc_dataset_name: Optional[str] = None,
+        # MLLM pre-computed CLIP text features
+        mllm_features_path: Optional[str] = None,
     ):
         self.root = root
         self.img_dir = os.path.join(root, img_dir)
@@ -118,6 +248,15 @@ class SIRSTDataset(Dataset):
         self.keep_ratio_pad = keep_ratio_pad
         self.augment = augment
         self.skip_bg_only = skip_bg_only
+        
+        # SCTransNet-style preprocessing
+        self.sctransnet_preproc = sctransnet_preproc
+        self.sc_use_noise = sc_use_noise
+        self.sc_use_gamma = sc_use_gamma
+        self.sc_pos_prob = sc_pos_prob
+        if sctransnet_preproc:
+            dataset_name = sc_dataset_name or os.path.basename(root)
+            self.img_norm_cfg = get_img_norm_cfg(dataset_name)
         self.mask_suffix = mask_suffix or ""
         self.points_dir = os.path.join(root, points_dir) if points_dir else None
         self.points_normed = bool(points_normed)
@@ -168,8 +307,129 @@ class SIRSTDataset(Dataset):
         if not self.samples:
             raise RuntimeError("No samples found. Check txt and folders.")
 
+        # Load MLLM pre-computed CLIP text features if provided
+        self.mllm_features = None
+        self.mllm_feature_mode = None  # "global" or "token_level"
+        self.mllm_text_dim = 512
+        self.mllm_token_len = 77
+        if mllm_features_path is not None:
+            fp = mllm_features_path if os.path.isabs(mllm_features_path) else os.path.join(root, mllm_features_path)
+            if os.path.isfile(fp):
+                self.mllm_features = torch.load(fp, map_location="cpu")
+                if isinstance(self.mllm_features, dict) and len(self.mllm_features) > 0:
+                    first_val = next(iter(self.mllm_features.values()))
+                    if isinstance(first_val, dict) and "token_features" in first_val:
+                        self.mllm_feature_mode = "token_level"
+                        try:
+                            tf = first_val["token_features"]
+                            if torch.is_tensor(tf) and tf.dim() == 2:
+                                self.mllm_token_len = int(tf.shape[0])
+                                self.mllm_text_dim = int(tf.shape[1])
+                            gf = first_val.get("global_feat", None)
+                            if torch.is_tensor(gf) and gf.numel() > 0:
+                                self.mllm_text_dim = int(gf.numel())
+                        except Exception:
+                            pass
+                    else:
+                        self.mllm_feature_mode = "global"
+                        if torch.is_tensor(first_val) and first_val.numel() > 0:
+                            self.mllm_text_dim = int(first_val.numel())
+                print(
+                    f"[SIRSTDataset] Loaded {len(self.mllm_features)} MLLM CLIP features "
+                    f"from {fp} (mode={self.mllm_feature_mode or 'unknown'})"
+                )
+            else:
+                print(f"[SIRSTDataset][warn] MLLM features file not found: {fp}")
+
     def __len__(self):
         return len(self.samples)
+
+    def _get_mllm_text_sample(self, stem: str) -> Dict[str, torch.Tensor]:
+        if self.mllm_features is None:
+            return {}
+
+        item = self.mllm_features.get(stem, None)
+        if self.mllm_feature_mode == "token_level":
+            zero_global = torch.zeros(self.mllm_text_dim, dtype=torch.float32)
+            zero_tokens = torch.zeros((self.mllm_token_len, self.mllm_text_dim), dtype=torch.float32)
+            zero_mask = torch.zeros((self.mllm_token_len,), dtype=torch.long)
+            zero_ids = torch.zeros((self.mllm_token_len,), dtype=torch.long)
+
+            if not isinstance(item, dict):
+                return {
+                    "clip_text_feat": zero_global,
+                    "clip_text_token_feat": zero_tokens,
+                    "clip_text_attn_mask": zero_mask,
+                    "clip_text_token_ids": zero_ids,
+                }
+
+            global_feat = item.get("global_feat", None)
+            token_feat = item.get("token_features", None)
+            attn_mask = item.get("attention_mask", None)
+            token_ids = item.get("token_ids", None)
+
+            if not torch.is_tensor(global_feat):
+                global_feat = zero_global
+            else:
+                global_feat = global_feat.float().view(-1)
+                if global_feat.numel() != self.mllm_text_dim:
+                    gf = zero_global.clone()
+                    n = min(self.mllm_text_dim, int(global_feat.numel()))
+                    gf[:n] = global_feat[:n]
+                    global_feat = gf
+
+            if not torch.is_tensor(token_feat):
+                token_feat = zero_tokens
+            else:
+                token_feat = token_feat.float()
+                if token_feat.dim() != 2:
+                    token_feat = zero_tokens
+                else:
+                    L, D = int(token_feat.shape[0]), int(token_feat.shape[1])
+                    tf = torch.zeros((self.mllm_token_len, self.mllm_text_dim), dtype=torch.float32)
+                    l_use = min(self.mllm_token_len, L)
+                    d_use = min(self.mllm_text_dim, D)
+                    tf[:l_use, :d_use] = token_feat[:l_use, :d_use]
+                    token_feat = tf
+
+            if not torch.is_tensor(attn_mask):
+                attn_mask = zero_mask
+            else:
+                attn_mask = attn_mask.long().view(-1)
+                if attn_mask.numel() != self.mllm_token_len:
+                    am = zero_mask.clone()
+                    n = min(self.mllm_token_len, int(attn_mask.numel()))
+                    am[:n] = attn_mask[:n]
+                    attn_mask = am
+
+            if not torch.is_tensor(token_ids):
+                token_ids = zero_ids
+            else:
+                token_ids = token_ids.long().view(-1)
+                if token_ids.numel() != self.mllm_token_len:
+                    ti = zero_ids.clone()
+                    n = min(self.mllm_token_len, int(token_ids.numel()))
+                    ti[:n] = token_ids[:n]
+                    token_ids = ti
+
+            return {
+                "clip_text_feat": global_feat,
+                "clip_text_token_feat": token_feat,
+                "clip_text_attn_mask": attn_mask,
+                "clip_text_token_ids": token_ids,
+            }
+
+        # Legacy global CLIP feature format
+        if torch.is_tensor(item):
+            feat = item.float().view(-1)
+            if feat.numel() != self.mllm_text_dim:
+                out = torch.zeros(self.mllm_text_dim, dtype=torch.float32)
+                n = min(self.mllm_text_dim, int(feat.numel()))
+                out[:n] = feat[:n]
+                feat = out
+            return {"clip_text_feat": feat}
+
+        return {"clip_text_feat": torch.zeros(self.mllm_text_dim, dtype=torch.float32)}
 
     def _resize_square(self, img: Image.Image, mask: Image.Image):
         if not self.keep_ratio_pad:
@@ -212,6 +472,61 @@ class SIRSTDataset(Dataset):
 
     def __getitem__(self, idx: int):
         img_path, mask_path, point_path = self.samples[idx]
+        
+        # ==================== SCTransNet-style preprocessing ====================
+        if self.sctransnet_preproc:
+            # Read as 16-bit grayscale
+            try:
+                img = Image.open(img_path).convert('I')  # 16-bit integer mode
+            except Exception:
+                img = Image.open(img_path).convert('L')  # Fallback to 8-bit
+            mask = Image.open(mask_path)
+            if mask.mode != 'L':
+                mask = mask.convert('L')
+            
+            # Convert to numpy
+            img_np = np.array(img, dtype=np.float32)
+            mask_np = np.array(mask, dtype=np.float32) / 255.0
+            if len(mask_np.shape) > 2:
+                mask_np = mask_np[:, :, 0]
+            
+            # Normalize using dataset statistics
+            img_np = normalize_grayscale(img_np, self.img_norm_cfg)
+            
+            # Random crop to patch_size
+            img_np, mask_np = random_crop_with_target(
+                img_np, mask_np, self.size, pos_prob=self.sc_pos_prob
+            )
+            
+            # Augmentation
+            if self.augment:
+                img_np, mask_np = augment_sctransnet(
+                    img_np, mask_np,
+                    use_noise=self.sc_use_noise,
+                    use_gamma=self.sc_use_gamma
+                )
+            
+            # Convert to tensor [1, H, W]
+            img_t = torch.from_numpy(np.ascontiguousarray(img_np[np.newaxis, :]))
+            mask_t = torch.from_numpy(np.ascontiguousarray((mask_np > 0.5).astype(np.float32)))
+            
+            if self.skip_bg_only and mask_t.max() == 0:
+                return self.__getitem__((idx + 1) % len(self))
+            
+            sample = {
+                "image": img_t,  # [1, H, W] single channel
+                "mask": mask_t,  # [H, W]
+                "name": os.path.splitext(os.path.basename(img_path))[0],
+                "roi": torch.tensor([0, 0, self.size, self.size], dtype=torch.int32),
+                "orig_size": torch.tensor([self.size, self.size], dtype=torch.int32),
+            }
+            if self.mllm_features is not None:
+                stem = os.path.splitext(os.path.basename(img_path))[0]
+                sample.update(self._get_mllm_text_sample(stem))
+            # Note: points not supported in SCTransNet mode (random crop changes coords)
+            return sample
+        
+        # ==================== Original RGB preprocessing ====================
         img = Image.open(img_path).convert("RGB")
         mask = Image.open(mask_path)
         if mask.mode != "L":
@@ -271,6 +586,9 @@ class SIRSTDataset(Dataset):
         if self.use_points:
             sample["points"] = points
             sample["point_labels"] = point_labels
+        if self.mllm_features is not None:
+            stem = os.path.splitext(os.path.basename(img_path))[0]
+            sample.update(self._get_mllm_text_sample(stem))
         return sample
 
 
@@ -326,6 +644,14 @@ def make_loader(
     points_default_label: int = 1,
     points_required: bool = False,
     points_max: int = 0,
+    # SCTransNet-style preprocessing options
+    sctransnet_preproc: bool = False,
+    sc_use_noise: bool = False,
+    sc_use_gamma: bool = False,
+    sc_pos_prob: float = 0.5,
+    sc_dataset_name: Optional[str] = None,
+    # MLLM pre-computed CLIP text features
+    mllm_features_path: Optional[str] = None,
 ):
     ds = SIRSTDataset(
         root,
@@ -339,6 +665,12 @@ def make_loader(
         points_default_label=points_default_label,
         points_required=points_required,
         points_max=points_max,
+        sctransnet_preproc=sctransnet_preproc,
+        sc_use_noise=sc_use_noise,
+        sc_use_gamma=sc_use_gamma,
+        sc_pos_prob=sc_pos_prob,
+        sc_dataset_name=sc_dataset_name,
+        mllm_features_path=mllm_features_path,
     )
     collate_fn = collate_sirst if ds.use_points else None
     return DataLoader(

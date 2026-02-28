@@ -1,0 +1,5 @@
+Run directory: ./outputs_sam_sirst_hq\NUDT_HQ_mllm_Qwen3_tokenCLIP_BkBiFusionPure_TSP1_TDPxattn03_SC_20260227_162743
+MLLM TextConditioner enabled: text_dim=512, params=262656
+Text sparse prompt enabled: tokens=1, params=262912
+Text dense mask prompt enabled: type=token_xattn, hidden=128, heads=4, alpha=0.3, params=525697
+Backbone BiFusion enabled: layers=12, hidden=128, heads=4, every=1, params=1766336

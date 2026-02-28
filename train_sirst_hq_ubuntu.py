@@ -2,19 +2,65 @@
 import time
 import argparse
 import json
+from contextlib import nullcontext
+from typing import Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.cuda.amp import autocast, GradScaler  # Ubuntu-focused: use cuda.amp explicitly
+import torch
 import numpy as np
 try:
     from skimage import measure
 except Exception:
     measure = None
+# Cross-version AMP import (PyTorch>=2.0 uses torch.amp, older uses torch.cuda.amp)
+try:
+    from torch.amp import autocast as _autocast_new, GradScaler as _GradScaler_new  # type: ignore
+    def autocast_ctx(device: str):
+        if device.startswith("cuda") and torch.cuda.is_available():
+            return _autocast_new("cuda")
+        return nullcontext()
+    def make_scaler(device: str):
+        if device == "cuda" and torch.cuda.is_available():
+            return _GradScaler_new("cuda")
+        class _DummyScaler:
+            def scale(self, loss):
+                return loss
+            def step(self, optimizer):
+                optimizer.step()
+            def update(self):
+                pass
+        return _DummyScaler()
+except Exception:
+    from torch.cuda.amp import autocast as _autocast_old, GradScaler as _GradScaler_old  # type: ignore
+    def autocast_ctx(device: str):
+        if device.startswith("cuda") and torch.cuda.is_available():
+            return _autocast_old()
+        return nullcontext()
+    def make_scaler(device: str):
+        if torch.cuda.is_available():
+            return _GradScaler_old()
+        class _DummyScaler:
+            def scale(self, loss):
+                return loss
+            def step(self, optimizer):
+                optimizer.step()
+            def update(self):
+                pass
+        return _DummyScaler()
+
 
 from sirst_dataset import make_loader
 from efficient_sam.efficient_sam_hq import build_efficient_sam_hq
+from efficient_sam.text_conditioner import (
+    build_backbone_bifusion_block_adapter,
+    build_bifusion_adapter_lite,
+    build_text_conditioner,
+    build_text_dense_mask_prompt_generator,
+    build_text_dense_mask_prompt_generator_v2,
+    build_text_sparse_prompt_projector,
+)
 
 
 def dice_loss(logits, target):
@@ -137,7 +183,10 @@ class PD_FA:
         self.all_pixel = 0
         self.PD = 0
         self.target = 0
+
+
 def _boundary_map_from_mask(mask_2d_float: torch.Tensor) -> torch.Tensor:
+    # mask_2d_float: [H,W] in {0,1}
     m = mask_2d_float.unsqueeze(0).unsqueeze(0)
     dil = F.max_pool2d(m, kernel_size=3, stride=1, padding=1)
     erode = 1.0 - F.max_pool2d(1.0 - m, kernel_size=3, stride=1, padding=1)
@@ -156,6 +205,7 @@ def sample_points_from_mask(mask_bhw: torch.Tensor, n_pos=4, n_neg=4, boundary_p
             bmap = _boundary_map_from_mask(mask_bhw[b].float())
             bpos = ((mask_bhw[b] > 0) & (bmap > 0)).nonzero(as_tuple=False)
             bneg = ((mask_bhw[b] == 0) & (bmap > 0)).nonzero(as_tuple=False)
+            # how many from boundary
             bp = int(min(n_pos, len(pos_idx)) * boundary_ratio)
             bn = int(min(n_neg, len(neg_idx)) * boundary_ratio)
             sel_bpos = bpos[torch.randint(len(bpos), (bp,), device=bpos.device)] if bp > 0 and len(bpos) > 0 else torch.zeros((0, 2), dtype=torch.long, device=device)
@@ -167,6 +217,7 @@ def sample_points_from_mask(mask_bhw: torch.Tensor, n_pos=4, n_neg=4, boundary_p
             pos = torch.cat([sel_bpos, sel_pos_rest], dim=0)
             neg = torch.cat([sel_bneg, sel_neg_rest], dim=0)
         else:
+            # original purely random sampling
             pass
         npos = min(n_pos, len(pos_idx)) if len(pos_idx) > 0 else 0
         nneg = min(n_neg, len(neg_idx)) if len(neg_idx) > 0 else 0
@@ -197,30 +248,6 @@ def sample_points_from_mask(mask_bhw: torch.Tensor, n_pos=4, n_neg=4, boundary_p
     return torch.stack(bpts, 0), torch.stack(blbl, 0)
 
 
-def pgap_with_random_neg(pgap, images: torch.Tensor, masks: torch.Tensor, n_neg: int):
-    pgap_pts, pgap_lbl, _ = pgap(images)
-    if n_neg <= 0:
-        return pgap_pts, pgap_lbl
-    B, H, W = masks.shape
-    device = pgap_pts.device
-    neg_pts = []
-    for b in range(B):
-        neg_idx = (masks[b] == 0).nonzero(as_tuple=False)
-        if neg_idx.numel() == 0:
-            x = torch.randint(0, W, (n_neg,), device=device)
-            y = torch.randint(0, H, (n_neg,), device=device)
-        else:
-            sel = neg_idx[torch.randint(len(neg_idx), (n_neg,), device=neg_idx.device)]
-            y = sel[:, 0]
-            x = sel[:, 1]
-        neg_pts.append(torch.stack([x, y], dim=-1).float())
-    neg_pts = torch.stack(neg_pts, dim=0)
-    neg_lbl = torch.zeros((B, n_neg), device=device, dtype=pgap_lbl.dtype)
-    pts = torch.cat([pgap_pts, neg_pts], dim=1)
-    lbl = torch.cat([pgap_lbl, neg_lbl], dim=1)
-    return pts, lbl
-
-
 def point_sample(input: torch.Tensor, point_coords: torch.Tensor, align_corners: bool = False) -> torch.Tensor:
     add_dim = False
     if point_coords.dim() == 3:
@@ -233,15 +260,19 @@ def point_sample(input: torch.Tensor, point_coords: torch.Tensor, align_corners:
 
 
 def _calc_uncertainty(logits: torch.Tensor) -> torch.Tensor:
+    # uncertainty = -|logit|
     return -torch.abs(logits)
 
 
 def _get_uncertain_point_coords(coarse_logits: torch.Tensor, num_points: int, oversample_ratio: float = 3.0, importance_sample_ratio: float = 0.75) -> torch.Tensor:
+    assert oversample_ratio >= 1.0 and 0.0 <= importance_sample_ratio <= 1.0
     N, C, H, W = coarse_logits.shape
     num_sampled = int(num_points * oversample_ratio)
+    # random coords in [0,1]
     point_coords = torch.rand(N, num_sampled, 2, device=coarse_logits.device)
-    point_logits = point_sample(coarse_logits, point_coords, align_corners=False)
-    point_uncertainties = _calc_uncertainty(point_logits)
+    point_logits = point_sample(coarse_logits, point_coords, align_corners=False)  # [N,C,num_sampled]
+    point_uncertainties = _calc_uncertainty(point_logits)  # [N,C,num_sampled]
+    # for binary mask C=1
     topk = max(1, int(num_points * importance_sample_ratio))
     idx = torch.topk(point_uncertainties[:, 0, :], k=topk, dim=1)[1]
     shift = num_sampled * torch.arange(N, dtype=torch.long, device=coarse_logits.device)[:, None]
@@ -253,7 +284,7 @@ def _get_uncertain_point_coords(coarse_logits: torch.Tensor, num_points: int, ov
         coords = torch.cat([coords_topk, rand_coords], dim=1)
     else:
         coords = coords_topk
-    return coords
+    return coords  # [N,P,2]
 
 
 def compute_metrics(logits_b1hw, target_b1hw, thr=0.5):
@@ -297,6 +328,35 @@ def log_line(message: str, log_path: str = None):
     print(message)
 
 
+def _dedup_trainable_params(params):
+    out = []
+    seen = set()
+    for p in params:
+        if p is None or (not getattr(p, "requires_grad", False)):
+            continue
+        pid = id(p)
+        if pid in seen:
+            continue
+        seen.add(pid)
+        out.append(p)
+    return out
+
+
+def _exclude_params(params, exclude_params):
+    exclude_ids = {id(p) for p in exclude_params}
+    out = []
+    seen = set()
+    for p in params:
+        if p is None or (not getattr(p, "requires_grad", False)):
+            continue
+        pid = id(p)
+        if pid in exclude_ids or pid in seen:
+            continue
+        seen.add(pid)
+        out.append(p)
+    return out
+
+
 def _select_topk_points(point_coords: torch.Tensor, point_labels: torch.Tensor, top_k: int):
     bsz, _, _ = point_coords.shape
     top_k = max(1, int(top_k))
@@ -313,8 +373,21 @@ def _select_topk_points(point_coords: torch.Tensor, point_labels: torch.Tensor, 
     return coords_out, labels_out
 
 
-def _build_pgap_prompts(pgap, images, masks, args):
-    pgap_pts, pgap_lbl, saliency = pgap(images)
+def _run_pgap_with_text_prior(pgap, images, args, text_prior=None):
+    if text_prior is not None and getattr(args, "pgap_text_fuse_internal", False):
+        return pgap(
+            images,
+            text_prior=text_prior,
+            text_fuse_weight=float(getattr(args, "pgap_text_fuse_weight", 0.5)),
+            text_fuse_mode=str(getattr(args, "pgap_text_fuse_mode", "mul")),
+        )
+    return pgap(images)
+
+
+def _build_pgap_prompts(pgap, images, masks, args, text_prior=None):
+    pgap_pts, pgap_lbl, saliency = _run_pgap_with_text_prior(
+        pgap, images, args, text_prior=text_prior
+    )
     if getattr(args, "pgap_label_by_gt", False):
         pgap_pts, pgap_lbl = pgap.label_points_by_gt(
             pgap_pts,
@@ -324,37 +397,270 @@ def _build_pgap_prompts(pgap, images, masks, args):
             min_pos=args.pgap_min_pos,
             max_neg=args.pgap_max_neg,
         )
-        return pgap_pts, pgap_lbl, saliency
-    if getattr(args, "pgap_neg_points", 0) > 0:
-        pgap_pts, pgap_lbl = pgap_with_random_neg(pgap, images, masks, args.pgap_neg_points)
     return pgap_pts, pgap_lbl, saliency
 
 
-def train_one_epoch(model, loader, optimizer, scaler, device, epoch, args, pgap=None):
+def _merge_dense_mask_prompts(base_prompt, text_prompt, alpha: float):
+    if text_prompt is None:
+        return base_prompt
+    if base_prompt is None:
+        return text_prompt
+    a = max(0.0, min(1.0, float(alpha)))
+    return (1.0 - a) * base_prompt + a * text_prompt
+
+
+def _build_text_prompt_inputs(
+    model,
+    args,
+    img_emb,
+    clip_feat,
+    clip_token_feat=None,
+    clip_token_mask=None,
+    text_sparse_prompt=None,
+    text_dense_prompt=None,
+):
+    if clip_feat is None and clip_token_feat is None:
+        return None, None
+    sparse_prompt = None
+    dense_prompt = None
+    if text_sparse_prompt is not None:
+        if clip_token_feat is not None:
+            sparse_prompt = text_sparse_prompt(clip_token_feat, attention_mask=clip_token_mask)
+        elif clip_feat is not None:
+            sparse_prompt = text_sparse_prompt(clip_feat)
+    if text_dense_prompt is not None:
+        target_size = getattr(model.prompt_encoder, "mask_input_size", None)
+        if getattr(text_dense_prompt, "expects_token_level", False):
+            dense_text_input = clip_token_feat if clip_token_feat is not None else clip_feat
+            if dense_text_input is not None:
+                dense_prompt = text_dense_prompt(
+                    img_emb,
+                    dense_text_input,
+                    attention_mask=clip_token_mask if clip_token_feat is not None else None,
+                    output_size=tuple(target_size) if target_size is not None else None,
+                )
+        elif clip_feat is not None:
+            dense_prompt = text_dense_prompt(
+                img_emb,
+                clip_feat,
+                output_size=tuple(target_size) if target_size is not None else None,
+            )
+        if dense_prompt is not None:
+            dense_prompt = dense_prompt * float(getattr(args, "text_dense_prompt_scale", 1.0))
+    return sparse_prompt, dense_prompt
+
+
+def _build_bifusion_text_inputs(
+    clip_feat: Optional[torch.Tensor],
+    clip_token_feat: Optional[torch.Tensor],
+    clip_token_mask: Optional[torch.Tensor],
+):
+    if clip_token_feat is not None:
+        if clip_token_mask is None:
+            clip_token_mask = torch.ones(
+                (clip_token_feat.shape[0], clip_token_feat.shape[1]),
+                device=clip_token_feat.device,
+                dtype=torch.long,
+            )
+        return clip_token_feat, clip_token_mask
+    if clip_feat is not None:
+        return clip_feat.unsqueeze(1), torch.ones(
+            (clip_feat.shape[0], 1),
+            device=clip_feat.device,
+            dtype=torch.long,
+        )
+    return None, None
+
+
+def _masked_text_mean(text_tokens: torch.Tensor, text_mask: Optional[torch.Tensor]) -> torch.Tensor:
+    if text_mask is None:
+        return text_tokens.mean(dim=1)
+    mask = (text_mask > 0).to(text_tokens.dtype).unsqueeze(-1)
+    denom = mask.sum(dim=1).clamp(min=1.0)
+    return (text_tokens * mask).sum(dim=1) / denom
+
+
+def _apply_backbone_bifusion_adapter(
+    model,
+    backbone_bifusion_adapter,
+    images,
+    clip_feat,
+    clip_token_feat=None,
+    clip_token_mask=None,
+):
+    if backbone_bifusion_adapter is None:
+        img_emb, interms = model.get_image_embeddings(images)
+        return img_emb, interms, clip_feat, clip_token_feat, clip_token_mask
+    text_tokens, text_mask = _build_bifusion_text_inputs(
+        clip_feat=clip_feat,
+        clip_token_feat=clip_token_feat,
+        clip_token_mask=clip_token_mask,
+    )
+    if text_tokens is None or not hasattr(model, "get_image_embeddings_with_text"):
+        img_emb, interms = model.get_image_embeddings(images)
+        return img_emb, interms, clip_feat, clip_token_feat, clip_token_mask
+    img_emb, interms, text_tokens_out, text_mask_out = model.get_image_embeddings_with_text(
+        images,
+        text_tokens,
+        text_attention_mask=text_mask,
+    )
+    text_global_out = _masked_text_mean(text_tokens_out, text_mask_out)
+    return img_emb, interms, text_global_out, text_tokens_out, text_mask_out
+
+
+def _apply_bifusion_adapter(
+    bifusion_adapter,
+    img_emb,
+    interms,
+    clip_feat,
+    clip_token_feat=None,
+    clip_token_mask=None,
+):
+    if bifusion_adapter is None:
+        return img_emb, interms, clip_feat, clip_token_feat, clip_token_mask
+    text_tokens, text_mask = _build_bifusion_text_inputs(
+        clip_feat=clip_feat,
+        clip_token_feat=clip_token_feat,
+        clip_token_mask=clip_token_mask,
+    )
+    if text_tokens is None:
+        return img_emb, interms, clip_feat, clip_token_feat, clip_token_mask
+
+    img_emb, interms, text_tokens_out, text_mask_out, text_global_out = bifusion_adapter(
+        img_emb,
+        interms,
+        text_tokens,
+        attention_mask=text_mask,
+    )
+    return img_emb, interms, text_global_out, text_tokens_out, text_mask_out
+
+
+def _build_pgap_text_prior(
+    model,
+    args,
+    img_emb,
+    clip_feat,
+    clip_token_feat=None,
+    clip_token_mask=None,
+    text_dense_prompt=None,
+    output_size=None,
+):
+    if not getattr(args, "pgap_text_fuse_internal", False):
+        return None
+    if text_dense_prompt is None:
+        return None
+    if getattr(text_dense_prompt, "expects_token_level", False):
+        dense_text_input = clip_token_feat if clip_token_feat is not None else clip_feat
+        if dense_text_input is None:
+            return None
+        prior = text_dense_prompt(
+            img_emb,
+            dense_text_input,
+            attention_mask=clip_token_mask if clip_token_feat is not None else None,
+            output_size=tuple(output_size) if output_size is not None else None,
+        )
+        if prior is not None:
+            prior = prior * float(getattr(args, "text_dense_prompt_scale", 1.0))
+        return prior
+    if clip_feat is None:
+        return None
+    prior = text_dense_prompt(
+        img_emb,
+        clip_feat,
+        output_size=tuple(output_size) if output_size is not None else None,
+    )
+    if prior is not None:
+        prior = prior * float(getattr(args, "text_dense_prompt_scale", 1.0))
+    return prior
+
+
+def train_one_epoch(
+    model,
+    loader,
+    optimizer,
+    scaler,
+    device,
+    epoch,
+    args,
+    pgap=None,
+    fab_criterion=None,
+    scr_criterion=None,
+    text_conditioner=None,
+    text_sparse_prompt=None,
+    text_dense_prompt=None,
+    bifusion_adapter=None,
+    backbone_bifusion_adapter=None,
+):
     model.train()
     if pgap is not None:
         pgap.train()
+    pgap_text_prior_only = bool(getattr(args, "pgap_text_prior_only", False))
     bce = nn.BCEWithLogitsLoss()
-    use_grad_accum = bool(getattr(args, "use_grad_accum", False))
-    accumulation_steps = int(getattr(args, "accumulation_steps", 1))
-    if not use_grad_accum or accumulation_steps < 1:
-        accumulation_steps = 1
     nwd_weight = float(getattr(args, "nwd_weight", 0.0))
     nwd_criterion = NWDLoss(constant=float(getattr(args, "nwd_constant", 12.0))).to(device) if nwd_weight > 0.0 else None
     meter_loss, n = 0.0, 0
-    optimizer.zero_grad(set_to_none=True)
-    for step, batch in enumerate(loader):
+    for batch in loader:
         images = batch["image"].to(device, non_blocking=True)
         masks = batch["mask"].to(device, non_blocking=True)
         B, H, W = masks.shape
 
-        with autocast():
-            img_emb, interms = model.get_image_embeddings(images)
-            mask_prompt = None
-            if pgap is not None:
-                pgap_pts, pgap_lbl, saliency = _build_pgap_prompts(pgap, images, masks, args)
-                if args.use_feature_mod:
-                    img_emb = model.apply_saliency_modulation(img_emb, saliency)
+        with autocast_ctx(device):
+            clip_feat = None
+            clip_token_feat = None
+            clip_token_mask = None
+            if "clip_text_feat" in batch and (
+                text_conditioner is not None
+                or text_sparse_prompt is not None
+                or text_dense_prompt is not None
+                or bifusion_adapter is not None
+                or backbone_bifusion_adapter is not None
+            ):
+                clip_feat = batch["clip_text_feat"].to(device, non_blocking=True)
+            if (text_sparse_prompt is not None or bifusion_adapter is not None or backbone_bifusion_adapter is not None) and "clip_text_token_feat" in batch:
+                clip_token_feat = batch["clip_text_token_feat"].to(device, non_blocking=True)
+                if "clip_text_attn_mask" in batch:
+                    clip_token_mask = batch["clip_text_attn_mask"].to(device, non_blocking=True)
+            if (not pgap_text_prior_only) and backbone_bifusion_adapter is not None:
+                img_emb, interms, clip_feat, clip_token_feat, clip_token_mask = _apply_backbone_bifusion_adapter(
+                    model=model,
+                    backbone_bifusion_adapter=backbone_bifusion_adapter,
+                    images=images,
+                    clip_feat=clip_feat,
+                    clip_token_feat=clip_token_feat,
+                    clip_token_mask=clip_token_mask,
+                )
+            else:
+                img_emb, interms = model.get_image_embeddings(images)
+        if (not pgap_text_prior_only) and bifusion_adapter is not None:
+            img_emb, interms, clip_feat, clip_token_feat, clip_token_mask = _apply_bifusion_adapter(
+                bifusion_adapter=bifusion_adapter,
+                img_emb=img_emb,
+                interms=interms,
+                clip_feat=clip_feat,
+                clip_token_feat=clip_token_feat,
+                clip_token_mask=clip_token_mask,
+            )
+        if (not pgap_text_prior_only) and text_conditioner is not None and clip_feat is not None:
+            img_emb = text_conditioner(img_emb, clip_feat)
+        pgap_text_prior = None
+        if pgap is not None:
+            pgap_text_prior = _build_pgap_text_prior(
+                model,
+                args,
+                img_emb,
+                clip_feat,
+                clip_token_feat=clip_token_feat,
+                clip_token_mask=clip_token_mask,
+                text_dense_prompt=text_dense_prompt,
+                output_size=(H, W),
+            )
+        mask_prompt = None
+        if pgap is not None:
+            pgap_pts, pgap_lbl, saliency = _build_pgap_prompts(
+                pgap, images, masks, args, text_prior=pgap_text_prior
+            )
+            if args.use_feature_mod:
+                img_emb = model.apply_saliency_modulation(img_emb, saliency)
                 if args.use_mask_prompt:
                     target_size = getattr(model.prompt_encoder, "mask_input_size", saliency.shape[-2:])
                     mask_prompt = F.interpolate(
@@ -372,70 +678,164 @@ def train_one_epoch(model, loader, optimizer, scaler, device, epoch, args, pgap=
                     boundary_ratio=float(args.boundary_ratio),
                 )
                 pts, lbl = pts.to(device), lbl.to(device)
-            use_hq_only = bool(args.hq_token_only or (args.hq_warmup_epochs > 0 and epoch <= args.hq_warmup_epochs))
-            pred_masks, _ = model.predict_masks(
-                img_emb,
+        else:
+            pts, lbl = sample_points_from_mask(
+                masks,
+                n_pos=args.n_pos,
+                n_neg=args.n_neg,
+                boundary_prior=bool(args.boundary_prior_sampling),
+                boundary_ratio=float(args.boundary_ratio),
+            )
+            pts, lbl = pts.to(device), lbl.to(device)
+        if pgap_text_prior_only:
+            text_sparse_embeds, text_dense_mask = None, None
+            mask_prompt_eff = mask_prompt
+        else:
+            text_sparse_embeds, text_dense_mask = _build_text_prompt_inputs(
+                model, args, img_emb, clip_feat,
+                clip_token_feat=clip_token_feat,
+                clip_token_mask=clip_token_mask,
+                text_sparse_prompt=text_sparse_prompt,
+                text_dense_prompt=text_dense_prompt,
+            )
+            mask_prompt_eff = _merge_dense_mask_prompts(
+                mask_prompt,
+                text_dense_mask,
+                getattr(args, "text_dense_prompt_merge_alpha", 0.5),
+            )
+        # HQ warmup: force using only HQ mask during early epochs
+        use_hq_only = bool(args.hq_token_only or (args.hq_warmup_epochs > 0 and epoch <= args.hq_warmup_epochs))
+        pred_masks, _ = model.predict_masks(
+            img_emb,
+            interms,
+            pts,
+            lbl,
+            batched_masks=mask_prompt_eff,
+            text_sparse_embeddings=text_sparse_embeds,
+            multimask_output=False,
+            input_h=H,
+            input_w=W,
+            output_h=H,
+            output_w=W,
+            hq_token_only=use_hq_only,
+        )
+        logits = pred_masks[:, 0, 0, ...].unsqueeze(1)
+        loss = bce(logits, masks.unsqueeze(1)) + dice_loss(logits, masks.unsqueeze(1))
+        if nwd_criterion is not None:
+            loss = loss + nwd_weight * nwd_criterion(logits, masks.unsqueeze(1))
+        freq_weight = float(getattr(args, "freq_consistency_weight", 0.0))
+        if freq_weight > 0.0:
+            bins = max(2, int(getattr(args, "freq_consistency_bins", 32)))
+            pred_prob = torch.sigmoid(logits)
+            gt_mask = masks.unsqueeze(1).float()
+            pred_profile = radial_frequency_profile(pred_prob, bins)
+            gt_profile = radial_frequency_profile(gt_mask, bins)
+            freq_loss = torch.mean(torch.abs(pred_profile - gt_profile))
+            loss = loss + freq_weight * freq_loss
+        # FAB Loss (Frequency-Aware Boundary Loss)
+        if fab_criterion is not None:
+            fab_loss_val = fab_criterion(logits, masks.unsqueeze(1))
+            loss = loss + args.fab_weight * fab_loss_val
+        # SCR Loss (Signal-to-Clutter Ratio Loss)
+        if scr_criterion is not None:
+            scr_loss_val = scr_criterion(logits, masks.unsqueeze(1), images)
+            loss = loss + args.scr_weight * scr_loss_val
+        # Prompt-Robust Consistency Loss
+        if getattr(args, 'use_prompt_robust_loss', False) and pgap is None:
+            # 生成扰动 prompt 点
+            with torch.no_grad():
+                perturb_std = float(getattr(args, 'prompt_robust_perturb_std', 3.0))
+                pts_perturbed = pts.clone()
+                noise = torch.randn_like(pts_perturbed.float()) * perturb_std
+                pts_perturbed = pts_perturbed + noise
+                # Clamp to valid image range
+                pts_perturbed[..., 0] = pts_perturbed[..., 0].clamp(0, W - 1)
+                pts_perturbed[..., 1] = pts_perturbed[..., 1].clamp(0, H - 1)
+            text_sparse_embeds_p, text_dense_mask_p = _build_text_prompt_inputs(
+                model, args, img_emb.detach(), clip_feat,
+                clip_token_feat=clip_token_feat,
+                clip_token_mask=clip_token_mask,
+                text_sparse_prompt=text_sparse_prompt,
+                text_dense_prompt=text_dense_prompt,
+            )
+            pred_masks_p, _ = model.predict_masks(
+                img_emb.detach(),  # detach to avoid double backward through encoder
                 interms,
-                pts,
+                pts_perturbed,
                 lbl,
-                batched_masks=mask_prompt,
+                batched_masks=_merge_dense_mask_prompts(
+                    mask_prompt,
+                    text_dense_mask_p,
+                    getattr(args, "text_dense_prompt_merge_alpha", 0.5),
+                ),
+                text_sparse_embeddings=text_sparse_embeds_p,
                 multimask_output=False,
-                input_h=H,
-                input_w=W,
-                output_h=H,
-                output_w=W,
+                input_h=H, input_w=W,
+                output_h=H, output_w=W,
                 hq_token_only=use_hq_only,
             )
-            logits = pred_masks[:, 0, 0, ...].unsqueeze(1)
-            loss = bce(logits, masks.unsqueeze(1)) + dice_loss(logits, masks.unsqueeze(1))
-            if nwd_criterion is not None:
-                loss = loss + nwd_weight * nwd_criterion(logits, masks.unsqueeze(1))
-            freq_weight = float(getattr(args, "freq_consistency_weight", 0.0))
-            if freq_weight > 0.0:
-                bins = max(2, int(getattr(args, "freq_consistency_bins", 32)))
-                pred_prob = torch.sigmoid(logits)
-                gt_mask = masks.unsqueeze(1).float()
-                pred_profile = radial_frequency_profile(pred_prob, bins)
-                gt_profile = radial_frequency_profile(gt_mask, bins)
-                freq_loss = torch.mean(torch.abs(pred_profile - gt_profile))
-                loss = loss + freq_weight * freq_loss
-            if args.use_point_loss:
-                coords = _get_uncertain_point_coords(logits.detach(), num_points=args.point_loss_points,
-                                                     oversample_ratio=args.point_loss_oversample,
-                                                     importance_sample_ratio=args.point_loss_importance)
-                gt_points = point_sample(masks.unsqueeze(1).float(), coords, align_corners=False)
-                pr_points = point_sample(logits, coords, align_corners=False)
-                bce_points = F.binary_cross_entropy_with_logits(pr_points, gt_points, reduction='none').mean(1).mean()
-                pr_sig = torch.sigmoid(pr_points)
-                num = 2 * (pr_sig * gt_points).sum(dim=2)
-                den = pr_sig.sum(dim=2) + gt_points.sum(dim=2)
-                dice_pts = 1 - (num + 1) / (den + 1)
-                dice_pts = dice_pts.mean()
-                loss = loss + args.point_loss_weight * (bce_points + dice_pts)
+            logits_p = pred_masks_p[:, 0, 0, ...].unsqueeze(1)
+            # 一致性损失: 两次预测应该相似 (Dice)
+            prob_clean = torch.sigmoid(logits.detach())
+            prob_perturb = torch.sigmoid(logits_p)
+            inter_c = (prob_clean * prob_perturb).sum(dim=(1, 2, 3))
+            denom_c = prob_clean.sum(dim=(1, 2, 3)) + prob_perturb.sum(dim=(1, 2, 3))
+            consist_dice = 1 - ((2 * inter_c + 1.0) / (denom_c + 1.0)).mean()
+            # 扰动预测也应对齐 GT
+            consist_bce = F.binary_cross_entropy_with_logits(logits_p, masks.unsqueeze(1))
+            prompt_robust_w = float(getattr(args, 'prompt_robust_weight', 0.1))
+            loss = loss + prompt_robust_w * (consist_dice + 0.5 * consist_bce)
+
+        if args.use_point_loss:
+            # point-based loss on uncertain points
+            num_points = args.point_loss_points
+            coords = _get_uncertain_point_coords(logits.detach(), num_points=num_points,
+                                                 oversample_ratio=args.point_loss_oversample,
+                                                 importance_sample_ratio=args.point_loss_importance)
+            gt_points = point_sample(masks.unsqueeze(1).float(), coords, align_corners=False)  # [B,1,P]
+            pr_points = point_sample(logits, coords, align_corners=False)  # [B,1,P]
+            # BCE at points
+            bce_points = F.binary_cross_entropy_with_logits(pr_points, gt_points, reduction='none').mean(1).mean()
+            # Dice at points (use same formula as image-wise)
+            pr_sig = torch.sigmoid(pr_points)
+            num = 2 * (pr_sig * gt_points).sum(dim=2)
+            den = pr_sig.sum(dim=2) + gt_points.sum(dim=2)
+            dice_pts = 1 - (num + 1) / (den + 1)
+            dice_pts = dice_pts.mean()
+            loss = loss + args.point_loss_weight * (bce_points + dice_pts)
+
+        optimizer.zero_grad(set_to_none=True)
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
 
         meter_loss += loss.item() * B
         n += B
-        loss = loss / accumulation_steps
-        scaler.scale(loss).backward()
-        if (step + 1) % accumulation_steps == 0 or (step + 1) == len(loader):
-            scaler.step(optimizer)
-            scaler.update()
-            optimizer.zero_grad(set_to_none=True)
     return meter_loss / max(n, 1)
 
 
 @torch.no_grad()
-def validate(model, loader, device, args, epoch: int, pgap=None):
+def validate(
+    model,
+    loader,
+    device,
+    args,
+    epoch: int,
+    pgap=None,
+    text_conditioner=None,
+    text_sparse_prompt=None,
+    text_dense_prompt=None,
+    bifusion_adapter=None,
+    backbone_bifusion_adapter=None,
+):
     model.eval()
     if pgap is not None:
         pgap.eval()
-    total_inter = 0.0
-    total_union = 0.0
+    pgap_text_prior_only = bool(getattr(args, "pgap_text_prior_only", False))
+    # 使用备份版的批次平均方式计算IoU和F1
+    ious, f1s = [], []
     niou_sum = 0.0
     niou_count = 0
-    tp = 0.0
-    fp = 0.0
-    fn = 0.0
     thr_sum = 0.0
     thr_count = 0
     pd_fa = PD_FA(distance_thresh=getattr(args, "pd_fa_dist", 3))
@@ -443,11 +843,61 @@ def validate(model, loader, device, args, epoch: int, pgap=None):
         images = batch["image"].to(device, non_blocking=True)
         masks = batch["mask"].to(device, non_blocking=True)
         B, H, W = masks.shape
-        img_emb, interms = model.get_image_embeddings(images)
+        clip_feat = None
+        clip_token_feat = None
+        clip_token_mask = None
+        if "clip_text_feat" in batch and (
+            text_conditioner is not None
+            or text_sparse_prompt is not None
+            or text_dense_prompt is not None
+            or bifusion_adapter is not None
+            or backbone_bifusion_adapter is not None
+        ):
+            clip_feat = batch["clip_text_feat"].to(device, non_blocking=True)
+        if (text_sparse_prompt is not None or bifusion_adapter is not None or backbone_bifusion_adapter is not None) and "clip_text_token_feat" in batch:
+            clip_token_feat = batch["clip_text_token_feat"].to(device, non_blocking=True)
+            if "clip_text_attn_mask" in batch:
+                clip_token_mask = batch["clip_text_attn_mask"].to(device, non_blocking=True)
+        if (not pgap_text_prior_only) and backbone_bifusion_adapter is not None:
+            img_emb, interms, clip_feat, clip_token_feat, clip_token_mask = _apply_backbone_bifusion_adapter(
+                model=model,
+                backbone_bifusion_adapter=backbone_bifusion_adapter,
+                images=images,
+                clip_feat=clip_feat,
+                clip_token_feat=clip_token_feat,
+                clip_token_mask=clip_token_mask,
+            )
+        else:
+            img_emb, interms = model.get_image_embeddings(images)
+        if (not pgap_text_prior_only) and bifusion_adapter is not None:
+            img_emb, interms, clip_feat, clip_token_feat, clip_token_mask = _apply_bifusion_adapter(
+                bifusion_adapter=bifusion_adapter,
+                img_emb=img_emb,
+                interms=interms,
+                clip_feat=clip_feat,
+                clip_token_feat=clip_token_feat,
+                clip_token_mask=clip_token_mask,
+            )
+        if (not pgap_text_prior_only) and text_conditioner is not None and clip_feat is not None:
+            img_emb = text_conditioner(img_emb, clip_feat)
+        pgap_text_prior = None
+        if pgap is not None:
+            pgap_text_prior = _build_pgap_text_prior(
+                model,
+                args,
+                img_emb,
+                clip_feat,
+                clip_token_feat=clip_token_feat,
+                clip_token_mask=clip_token_mask,
+                text_dense_prompt=text_dense_prompt,
+                output_size=(H, W),
+            )
         mask_prompt = None
         if pgap is not None:
             if getattr(args, "pgap_two_stage", False):
-                pgap_pts, pgap_lbl, saliency = pgap(images)
+                pgap_pts, pgap_lbl, saliency = _run_pgap_with_text_prior(
+                    pgap, images, args, text_prior=pgap_text_prior
+                )
                 if args.use_feature_mod:
                     img_emb = model.apply_saliency_modulation(img_emb, saliency)
                 if args.use_mask_prompt:
@@ -459,12 +909,27 @@ def validate(model, loader, device, args, epoch: int, pgap=None):
                 pts1 = pos_pts.unsqueeze(1).to(device)
                 lbl1 = pos_lbl.unsqueeze(1).to(device)
                 use_hq_only = bool(args.hq_token_only or (args.hq_warmup_epochs > 0 and epoch <= args.hq_warmup_epochs))
+                if pgap_text_prior_only:
+                    text_sparse_stage1, text_dense_stage1 = None, None
+                else:
+                    text_sparse_stage1, text_dense_stage1 = _build_text_prompt_inputs(
+                        model, args, img_emb, clip_feat,
+                        clip_token_feat=clip_token_feat,
+                        clip_token_mask=clip_token_mask,
+                        text_sparse_prompt=text_sparse_prompt,
+                        text_dense_prompt=text_dense_prompt,
+                    )
                 pred_masks1, _ = model.predict_masks(
                     img_emb,
                     interms,
                     pts1,
                     lbl1,
-                    batched_masks=mask_prompt,
+                    batched_masks=_merge_dense_mask_prompts(
+                        mask_prompt,
+                        text_dense_stage1,
+                        getattr(args, "text_dense_prompt_merge_alpha", 0.5),
+                    ),
+                    text_sparse_embeddings=text_sparse_stage1,
                     multimask_output=False,
                     input_h=H,
                     input_w=W,
@@ -481,7 +946,9 @@ def validate(model, loader, device, args, epoch: int, pgap=None):
                 lbl = torch.cat([pos_lbl, neg_lbl], dim=1).unsqueeze(1)
                 pts, lbl = pts.to(device), lbl.to(device)
             else:
-                pgap_pts, pgap_lbl, saliency = _build_pgap_prompts(pgap, images, masks, args)
+                pgap_pts, pgap_lbl, saliency = _build_pgap_prompts(
+                    pgap, images, masks, args, text_prior=pgap_text_prior
+                )
                 if args.use_feature_mod:
                     img_emb = model.apply_saliency_modulation(img_emb, saliency)
                 if args.use_mask_prompt:
@@ -501,13 +968,30 @@ def validate(model, loader, device, args, epoch: int, pgap=None):
                 boundary_ratio=float(args.boundary_ratio),
             )
             pts, lbl = pts.to(device), lbl.to(device)
+        if pgap_text_prior_only:
+            text_sparse_embeds, text_dense_mask = None, None
+            mask_prompt_eff = mask_prompt
+        else:
+            text_sparse_embeds, text_dense_mask = _build_text_prompt_inputs(
+                model, args, img_emb, clip_feat,
+                clip_token_feat=clip_token_feat,
+                clip_token_mask=clip_token_mask,
+                text_sparse_prompt=text_sparse_prompt,
+                text_dense_prompt=text_dense_prompt,
+            )
+            mask_prompt_eff = _merge_dense_mask_prompts(
+                mask_prompt,
+                text_dense_mask,
+                getattr(args, "text_dense_prompt_merge_alpha", 0.5),
+            )
         use_hq_only = bool(args.hq_token_only or (args.hq_warmup_epochs > 0 and epoch <= args.hq_warmup_epochs))
         pred_masks, _ = model.predict_masks(
             img_emb,
             interms,
             pts,
             lbl,
-            batched_masks=mask_prompt,
+            batched_masks=mask_prompt_eff,
+            text_sparse_embeddings=text_sparse_embeds,
             multimask_output=False,
             input_h=H,
             input_w=W,
@@ -528,25 +1012,22 @@ def validate(model, loader, device, args, epoch: int, pgap=None):
         else:
             thr_used = args.thr
 
+        # 使用备份版的计算方式：每批次调用compute_metrics
+        miou, mf1 = compute_metrics(logits, masks.unsqueeze(1), thr=thr_used)
+        ious.append(miou)
+        f1s.append(mf1)
+
+        # 保留nIoU计算（样本级平均）
         prob = torch.sigmoid(logits)
         pred = (prob >= thr_used).float()
         target = masks.unsqueeze(1).float()
-
-        inter = (pred * target).sum().item()
-        union = (pred + target - pred * target).sum().item()
-        total_inter += inter
-        total_union += union
-
         inter_s = (pred * target).sum(dim=(1, 2, 3))
         union_s = (pred + target - pred * target).sum(dim=(1, 2, 3))
         iou_s = torch.where(union_s > 0, inter_s / union_s, torch.ones_like(union_s))
         niou_sum += iou_s.sum().item()
         niou_count += int(iou_s.numel())
 
-        tp += (pred * target).sum().item()
-        fp += (pred * (1 - target)).sum().item()
-        fn += ((1 - pred) * target).sum().item()
-
+        # 保留PD/FA计算
         pred_cpu = pred.detach().cpu()
         target_cpu = target.detach().cpu()
         for b in range(pred_cpu.shape[0]):
@@ -555,10 +1036,10 @@ def validate(model, loader, device, args, epoch: int, pgap=None):
         thr_sum += float(thr_used)
         thr_count += 1
 
-    miou_avg = total_inter / total_union if total_union > 0 else 0.0
+    # 备份版方式：批次平均
+    miou_avg = sum(ious) / len(ious) if ious else 0.0
+    f1_avg = sum(f1s) / len(f1s) if f1s else 0.0
     niou_avg = niou_sum / niou_count if niou_count > 0 else 0.0
-    denom = (2.0 * tp + fp + fn)
-    f1_avg = (2.0 * tp) / denom if denom > 0 else 0.0
     pd_val, fa_val = pd_fa.get()
     thr_used = (thr_sum / thr_count) if thr_count > 0 else args.thr
     return miou_avg, niou_avg, f1_avg, pd_val, fa_val, thr_used
@@ -574,10 +1055,6 @@ def main():
     p.add_argument("--epochs", type=int, default=20)
     p.add_argument("--batch_size", type=int, default=4)
     p.add_argument("--workers", type=int, default=4)
-    p.add_argument("--use_grad_accum", action="store_true",
-                   help="Enable gradient accumulation to simulate larger batch size.")
-    p.add_argument("--accumulation_steps", type=int, default=1,
-                   help="Number of steps to accumulate gradients before optimizer step.")
     p.add_argument("--n_pos", type=int, default=4)
     p.add_argument("--n_neg", type=int, default=4)
     p.add_argument("--lr_head", type=float, default=1e-4)
@@ -588,11 +1065,22 @@ def main():
     p.add_argument("--thr", type=float, default=0.5)
     p.add_argument("--model", type=str, default="vitt", choices=["vitt", "vits"])  # kept for naming
     p.add_argument("--hq_token_only", action="store_true")
-    p.add_argument("--mask_suffix", type=str, default="",
-                   help="Optional suffix for mask filenames before extension, e.g. '_pixels0'.")
+    p.add_argument("--hq_warmup_epochs", type=int, default=0,
+                   help="If >0, use HQ token only for the first N epochs.")
+    p.add_argument("--init_from_baseline", type=str, default=None,
+                   help="Optional path to EfficientSAM baseline checkpoint to partially initialize from.")
+    p.add_argument("--use_fs_adapter", action="store_true",
+                   help="Enable frequency-spatial adapter inside ViT blocks.")
+    p.add_argument("--use_ms_fusion", action="store_true",
+                   help="Enable multi-scale fusion from intermediate ViT blocks.")
+    p.add_argument("--use_detail_enhancer", action="store_true",
+                   help="Enable Sobel detail enhancer on shallow features.")
+    p.add_argument("--early_exit_layer", type=int, default=0,
+                   help="Exit after N transformer blocks (1-based). Use 0 to disable.")
     # Radial gate for HQ-SAM (optional)
-    p.add_argument("--use_radial_gate_hq", action="store_true")
-    p.add_argument("--rgate_loc", type=str, default="encoder", choices=["encoder", "decoder", "both"]) 
+    p.add_argument("--use_radial_gate_hq", action="store_true", help="Enable RadialFreqGate for HQ-SAM.")
+    p.add_argument("--rgate_loc", type=str, default="encoder", choices=["encoder", "decoder", "both"],
+                   help="Where to apply radial gate: encoder neck_out, decoder hq_features, or both.")
     p.add_argument("--freq_patch_size_hq", type=int, default=8)
     p.add_argument("--radial_bins_hq", type=int, default=6)
     p.add_argument("--radial_channel_shared_hq", action="store_true")
@@ -612,20 +1100,100 @@ def main():
                    help="Which ASG implementation to use.")
     p.add_argument("--asg_strength_enc", type=float, default=1.0)
     p.add_argument("--asg_strength_dec", type=float, default=1.0)
+    # AFD (Adaptive Frequency Decomposition) module for HQ-SAM
+    p.add_argument("--use_afd_hq", action="store_true", help="Enable AdaptiveFrequencyDecomposition for HQ-SAM.")
+    p.add_argument("--afd_loc", type=str, default="encoder", choices=["encoder", "decoder", "both"],
+                   help="Where to apply AFD: encoder neck_out, decoder hq_features, or both.")
+    p.add_argument("--afd_patch_size", type=int, default=8,
+                   help="Patch size for AFD FFT processing.")
+    p.add_argument("--afd_num_bins", type=int, default=16,
+                   help="Number of discrete bins for cutoff prediction.")
+    p.add_argument("--afd_low_ratio", type=float, default=1.0,
+                   help="Low frequency gain initial value (learnable, default 1.0 = no suppression).")
+    p.add_argument("--afd_high_ratio", type=float, default=1.0,
+                   help="High frequency gain initial value (learnable, default 1.0 = no enhancement).")
+    p.add_argument("--afd_learnable_gains", action="store_true", default=True,
+                   help="Use learnable gains instead of fixed ratios (default True).")
+    p.add_argument("--afd_fixed_gains", action="store_true",
+                   help="Use fixed gains (disable learnable gains).")
+    p.add_argument("--afd_channel_wise", action="store_true",
+                   help="Use per-channel independent gains instead of global gains.")
+    p.add_argument("--afd_strength_enc", type=float, default=0.5,
+                   help="Residual strength for AFD at encoder.")
+    p.add_argument("--afd_strength_dec", type=float, default=0.5,
+                   help="Residual strength for AFD at decoder.")
+    # MSFE (Multi-Scale Frequency Enhancement) module
+    p.add_argument("--use_msfe_hq", action="store_true",
+                   help="Enable MultiScaleFrequencyEnhancement for HQ-SAM.")
+    p.add_argument("--msfe_loc", type=str, default="encoder", choices=["encoder", "decoder", "both"],
+                   help="Where to apply MSFE: encoder, decoder, or both.")
+    p.add_argument("--msfe_patch_sizes", type=str, default="4,8,16",
+                   help="Comma-separated patch sizes, e.g., '4,8,16'.")
+    p.add_argument("--msfe_num_bins", type=int, default=8,
+                   help="Number of radial frequency bins per scale.")
+    p.add_argument("--msfe_fusion", type=str, default="attention", choices=["attention", "concat", "average"],
+                   help="Fusion method for multi-scale outputs.")
+    p.add_argument("--msfe_strength_enc", type=float, default=0.5,
+                   help="Residual strength for MSFE at encoder.")
+    p.add_argument("--msfe_strength_dec", type=float, default=0.5,
+                   help="Residual strength for MSFE at decoder.")
     p.add_argument("--freq_consistency_weight", type=float, default=0.0,
                    help="Weight for radial frequency consistency loss.")
     p.add_argument("--freq_consistency_bins", type=int, default=32,
                    help="Radial bins used for frequency consistency loss.")
-    # Options (default OFF)
-    p.add_argument("--use_point_loss", action="store_true")
-    p.add_argument("--point_loss_points", type=int, default=4096)
-    p.add_argument("--point_loss_oversample", type=float, default=3.0)
-    p.add_argument("--point_loss_importance", type=float, default=0.75)
-    p.add_argument("--point_loss_weight", type=float, default=0.3)
-    p.add_argument("--nwd_weight", type=float, default=0.0)
-    p.add_argument("--nwd_constant", type=float, default=12.0)
-    p.add_argument("--boundary_prior_sampling", action="store_true")
-    p.add_argument("--boundary_ratio", type=float, default=0.5)
+    # FAB Loss (Frequency-Aware Boundary Loss)
+    p.add_argument("--use_fab_loss", action="store_true",
+                   help="Enable Frequency-Aware Boundary Loss for small target detection.")
+    p.add_argument("--fab_weight", type=float, default=0.5,
+                   help="Weight for FAB Loss.")
+    p.add_argument("--fab_num_bins", type=int, default=16,
+                   help="Number of radial frequency bins for FAB Loss.")
+    p.add_argument("--fab_boundary_width", type=int, default=3,
+                   help="Boundary extraction kernel size.")
+    p.add_argument("--fab_high_freq_weight", type=float, default=2.0,
+                   help="Weight multiplier for high frequency components.")
+    # SCR Loss (Signal-to-Clutter Ratio Loss)
+    p.add_argument("--use_scr_loss", action="store_true",
+                   help="Enable Signal-to-Clutter Ratio Loss for IRSTD.")
+    p.add_argument("--scr_weight", type=float, default=0.1,
+                   help="Weight for SCR Loss.")
+    p.add_argument("--scr_inner_k", type=int, default=5,
+                   help="Inner annular dilation kernel size for SCR.")
+    p.add_argument("--scr_outer_k", type=int, default=15,
+                   help="Outer annular dilation kernel size for SCR.")
+    # Prompt-Robust Consistency Loss
+    p.add_argument("--use_prompt_robust_loss", action="store_true",
+                   help="Enable Prompt-Robustness Consistency Loss.")
+    p.add_argument("--prompt_robust_weight", type=float, default=0.1,
+                   help="Weight for prompt robustness consistency loss.")
+    p.add_argument("--prompt_robust_perturb_std", type=float, default=3.0,
+                   help="Std of Gaussian noise added to prompt points (pixels).")
+    # Proposed options (default OFF)
+    p.add_argument("--use_point_loss", action="store_true",
+                   help="Enable uncertainty-based point sampling BCE+Dice as auxiliary loss.")
+    p.add_argument("--point_loss_points", type=int, default=4096,
+                   help="Number of points for point loss.")
+    p.add_argument("--point_loss_oversample", type=float, default=3.0,
+                   help="Oversample ratio for uncertain point selection.")
+    p.add_argument("--point_loss_importance", type=float, default=0.75,
+                   help="Importance sample ratio for uncertain points.")
+    p.add_argument("--point_loss_weight", type=float, default=0.3,
+                   help="Weight for point loss term.")
+    p.add_argument("--nwd_weight", type=float, default=0.0,
+                   help="Weight for NWD loss (0 to disable).")
+    p.add_argument("--nwd_constant", type=float, default=12.0,
+                   help="Normalization constant for NWD loss.")
+    p.add_argument("--boundary_prior_sampling", action="store_true",
+                   help="Prefer sampling points near GT boundary.")
+    p.add_argument("--boundary_ratio", type=float, default=0.5,
+                   help="Fraction of pos/neg points sampled from boundary region.")
+    # Task Tokens (Learnable Prompt Tokens for IRSTD)
+    p.add_argument("--use_task_tokens", action="store_true",
+                   help="Enable learnable task tokens in PromptEncoder for IRSTD prior.")
+    p.add_argument("--num_task_tokens", type=int, default=2,
+                   help="Number of learnable task tokens (1-4 recommended).")
+    p.add_argument("--task_token_init_scale", type=float, default=0.02,
+                   help="Initialization scale for task tokens (small to avoid disrupting pretrain).")
     # Phase prompt generator (PGAP)
     p.add_argument("--use_pgap", action="store_true",
                    help="Use PhasePromptGenerator to auto-generate prompt points.")
@@ -642,6 +1210,16 @@ def main():
     p.add_argument("--pgap_no_dynamic_topk", action="store_true")
     p.add_argument("--pgap_min_top_k", type=int, default=1)
     p.add_argument("--pgap_use_dct", action="store_true")
+    p.add_argument("--pgap_text_fuse_internal", action="store_true",
+                   help="Fuse text dense prior into PGAP saliency inside PGAP before point extraction.")
+    p.add_argument("--pgap_text_fuse_weight", type=float, default=0.5,
+                   help="Fusion strength for internal PGAP-text saliency fusion.")
+    p.add_argument("--pgap_text_fuse_mode", type=str, default="mul", choices=["mul", "add"],
+                   help="Internal PGAP-text saliency fusion mode.")
+    p.add_argument("--pgap_text_prior_only", action="store_true",
+                   help="Pure PGAP-text mode: text is only used to build PGAP internal fused saliency, not injected into SAM (no FiLM/sparse/dense prompt injection).")
+    p.add_argument("--use_feature_mod", action="store_true",
+                   help="Use PGAP saliency to modulate image embeddings.")
     p.add_argument("--pgap_label_by_gt", action="store_true",
                    help="Use GT to relabel PGAP points: inside=pos, outside=neg.")
     p.add_argument("--pgap_min_pos", type=int, default=1)
@@ -651,13 +1229,10 @@ def main():
     p.add_argument("--pgap_stage1_top_k", type=int, default=1)
     p.add_argument("--pgap_stage1_thr", type=float, default=0.5)
     p.add_argument("--pgap_stage2_neg", type=int, default=2)
-    p.add_argument("--pgap_neg_points", type=int, default=0,
-                   help="Number of random negative points to add to PGAP prompts.")
     p.add_argument("--use_mask_prompt", action="store_true",
                    help="Use PGAP saliency map as dense mask prompt.")
-    p.add_argument("--use_feature_mod", action="store_true",
-                   help="Apply PGAP saliency feature modulation on image embeddings.")
-    p.add_argument("--val_thr_search", action="store_true")
+    p.add_argument("--val_thr_search", action="store_true",
+                   help="Enable validation threshold grid search.")
     p.add_argument("--val_thr_min", type=float, default=0.35)
     p.add_argument("--val_thr_max", type=float, default=0.55)
     p.add_argument("--val_thr_step", type=float, default=0.05)
@@ -665,17 +1240,70 @@ def main():
                    help="Distance threshold for PD/FA metrics (in pixels).")
     p.add_argument("--log_file", type=str, default=None,
                    help="Path to log file (default: <out_dir>/log.txt).")
-    p.add_argument("--hq_warmup_epochs", type=int, default=0,
-                   help="If >0, use HQ token only for the first N epochs.")
-    p.add_argument("--init_from_baseline", type=str, default=None,
-                   help="Optional path to EfficientSAM baseline checkpoint to partially initialize from.")
-    p.add_argument("--use_fs_adapter", action="store_true",
-                   help="Enable frequency-spatial adapter inside ViT blocks.")
-    p.add_argument("--use_ms_fusion", action="store_true",
-                   help="Enable multi-scale fusion from intermediate ViT blocks.")
-    p.add_argument("--use_detail_enhancer", action="store_true",
-                   help="Enable Sobel detail enhancer on shallow features.")
-    # Freeze/unfreeze strategy configs (align with train_sirst_hq.py)
+    p.add_argument("--mask_suffix", type=str, default="",
+                   help="Optional suffix for mask filenames before extension, e.g. '_pixels0'.")
+    # SCTransNet-style preprocessing options (与备份版兼容)
+    p.add_argument("--sctransnet_preproc", action="store_true",
+                   help="Use SCTransNet-style preprocessing: 16-bit grayscale, dataset normalization, random crop, enhanced augmentation.")
+    p.add_argument("--sc_use_noise", action="store_true",
+                   help="Add Gaussian noise in SCTransNet augmentation.")
+    p.add_argument("--sc_use_gamma", action="store_true",
+                   help="Apply random gamma correction in SCTransNet augmentation.")
+    p.add_argument("--sc_pos_prob", type=float, default=0.5,
+                   help="Probability of cropping region containing target in SCTransNet mode.")
+    p.add_argument("--sc_dataset_name", type=str, default=None,
+                   help="Dataset name for SCTransNet normalization (auto-detected from data_root if not set).")
+    # MLLM text prompt (pre-computed CLIP features)
+    p.add_argument("--use_mllm_prompt", action="store_true",
+                   help="Enable MLLM-based text prompting with pre-computed CLIP features.")
+    p.add_argument("--mllm_features_path", type=str, default="mllm_clip_features.pt",
+                   help="Path to pre-computed CLIP text features file (.pt).")
+    p.add_argument("--mllm_text_dim", type=int, default=512,
+                   help="Dimension of CLIP text features (512 for ViT-B/32).")
+    p.add_argument("--use_text_sparse_prompt", action="store_true",
+                   help="Project global CLIP text feature into extra sparse prompt token(s).")
+    p.add_argument("--text_sparse_num_tokens", type=int, default=1,
+                   help="Number of text sparse prompt tokens.")
+    p.add_argument("--text_sparse_init_scale", type=float, default=0.02,
+                   help="Init scale for text sparse base tokens.")
+    p.add_argument("--use_text_dense_prompt", action="store_true",
+                   help="Generate a text-guided dense mask prompt from image embeddings + CLIP text feature.")
+    p.add_argument("--text_dense_hidden_dim", type=int, default=128,
+                   help="Hidden channels for text-guided dense mask prompt generator.")
+    p.add_argument("--text_dense_prompt_type", type=str, default="global",
+                   choices=["global", "token_xattn"],
+                   help="Dense text prompt variant: global (v1) or token_xattn (v2 token-level cross-attn).")
+    p.add_argument("--text_dense_num_heads", type=int, default=4,
+                   help="Number of heads for token_xattn dense prompt variant.")
+    p.add_argument("--text_dense_prompt_merge_alpha", type=float, default=0.5,
+                   help="Blend ratio when combining PGAP mask prompt and text dense mask prompt.")
+    p.add_argument("--text_dense_prompt_scale", type=float, default=1.0,
+                   help="Scale factor applied to generated text dense mask prompt before merging.")
+    p.add_argument("--use_bifusion_adapter", action="store_true",
+                   help="Enable lightweight bidirectional text-vision fusion adapter at two levels (interms + img_emb).")
+    p.add_argument("--bifusion_hidden_dim", type=int, default=128,
+                   help="Hidden dim for BiFusion attention space.")
+    p.add_argument("--bifusion_num_heads", type=int, default=4,
+                   help="Number of heads for BiFusion cross-attention.")
+    p.add_argument("--bifusion_interms_dim", type=int, default=192,
+                   help="Fallback interms channel dim when auto-detection fails.")
+    p.add_argument("--bifusion_disable_interms_level", action="store_true",
+                   help="Disable interms-level fusion; keep img_emb level only.")
+    p.add_argument("--bifusion_img_res_scale", type=float, default=1.0,
+                   help="Residual scale for img_emb update in BiFusion.")
+    p.add_argument("--bifusion_interms_res_scale", type=float, default=1.0,
+                   help="Residual scale for interms update in BiFusion.")
+    p.add_argument("--bifusion_text_res_scale", type=float, default=1.0,
+                   help="Residual scale for text token update in BiFusion.")
+    p.add_argument("--use_bifusion_backbone_blocks", action="store_true",
+                   help="Enable bidirectional text-vision fusion inside image encoder blocks.")
+    p.add_argument("--bifusion_block_apply_every", type=int, default=1,
+                   help="Apply backbone BiFusion every K encoder blocks.")
+    p.add_argument("--bifusion_block_vision_res_scale", type=float, default=1.0,
+                   help="Residual scale for vision-token update in backbone BiFusion.")
+    p.add_argument("--bifusion_block_text_res_scale", type=float, default=1.0,
+                   help="Residual scale for text-token update in backbone BiFusion.")
+    # Freeze/unfreeze strategy configs
     p.add_argument("--freeze_encoder_epochs", type=int, default=-1,
                    help="Freeze image encoder for N epochs first (<=0 to use epochs//4).")
     p.add_argument("--train_prompt_encoder_during_freeze", action="store_true",
@@ -717,6 +1345,12 @@ def main():
         workers=args.workers,
         shuffle=True,
         mask_suffix=args.mask_suffix,
+        sctransnet_preproc=args.sctransnet_preproc,
+        sc_use_noise=args.sc_use_noise,
+        sc_use_gamma=args.sc_use_gamma,
+        sc_pos_prob=args.sc_pos_prob,
+        sc_dataset_name=args.sc_dataset_name,
+        mllm_features_path=getattr(args, "mllm_features_path", None) if getattr(args, "use_mllm_prompt", False) else None,
     )
     val_loader = make_loader(
         args.data_root,
@@ -728,6 +1362,12 @@ def main():
         workers=args.workers,
         shuffle=False,
         mask_suffix=args.mask_suffix,
+        sctransnet_preproc=args.sctransnet_preproc,
+        sc_use_noise=False,  # No noise augmentation for validation
+        sc_use_gamma=False,  # No gamma augmentation for validation
+        sc_pos_prob=args.sc_pos_prob,
+        sc_dataset_name=args.sc_dataset_name,
+        mllm_features_path=getattr(args, "mllm_features_path", None) if getattr(args, "use_mllm_prompt", False) else None,
     )
 
     # Model
@@ -738,6 +1378,7 @@ def main():
         use_adapter=args.use_fs_adapter,
         use_ms_fusion=args.use_ms_fusion,
         use_detail_enhancer=args.use_detail_enhancer,
+        early_exit_layer=args.early_exit_layer,
     )
     # Attach frequency gates if requested
     if args.use_asg_hq and args.use_radial_gate_hq:
@@ -817,6 +1458,90 @@ def main():
                 model.mask_decoder.rgate_strength_dec = float(args.rgate_strength_dec)
         except Exception as e:
             log_line(f"[warn] Failed to attach RadialFreqGate: {e}", args.log_file)
+    # Attach AFD (Adaptive Frequency Decomposition) if requested
+    if args.use_afd_hq:
+        try:
+            from efficient_sam.freq_modules import AdaptiveFrequencyDecomposition
+            if args.afd_loc in ("encoder", "both"):
+                try:
+                    dim_enc = model.image_encoder.neck[0].out_channels
+                except Exception:
+                    dim_enc = 256
+                afd_enc = AdaptiveFrequencyDecomposition(
+                    dim=dim_enc,
+                    patch_size=args.afd_patch_size,
+                    num_cutoff_bins=args.afd_num_bins,
+                    low_enhance_ratio=args.afd_low_ratio,
+                    high_enhance_ratio=args.afd_high_ratio,
+                    learnable_gains=not getattr(args, 'afd_fixed_gains', False),
+                    channel_wise_gains=getattr(args, 'afd_channel_wise', False),
+                )
+                model.image_encoder.afd_gate = afd_enc
+                model.image_encoder.afd_strength = float(args.afd_strength_enc)
+                log_line(f"Attached AFD to encoder (dim={dim_enc}, patch={args.afd_patch_size}, bins={args.afd_num_bins})", args.log_file)
+            if args.afd_loc in ("decoder", "both"):
+                c_dec = getattr(model.mask_decoder, "transformer_dim", 256) // 8
+                afd_dec = AdaptiveFrequencyDecomposition(
+                    dim=c_dec,
+                    patch_size=args.afd_patch_size,
+                    num_cutoff_bins=args.afd_num_bins,
+                    low_enhance_ratio=args.afd_low_ratio,
+                    high_enhance_ratio=args.afd_high_ratio,
+                    learnable_gains=not getattr(args, 'afd_fixed_gains', False),
+                    channel_wise_gains=getattr(args, 'afd_channel_wise', False),
+                )
+                model.mask_decoder.afd_gate = afd_dec
+                model.mask_decoder.afd_strength_dec = float(args.afd_strength_dec)
+                log_line(f"Attached AFD to decoder (dim={c_dec}, patch={args.afd_patch_size}, bins={args.afd_num_bins})", args.log_file)
+        except Exception as e:
+            log_line(f"[warn] Failed to attach AFD: {e}", args.log_file)
+    # Attach MSFE (Multi-Scale Frequency Enhancement) if requested
+    if getattr(args, "use_msfe_hq", False):
+        try:
+            from efficient_sam.freq_modules import MultiScaleFrequencyEnhancement
+            # Parse patch sizes from comma-separated string
+            patch_sizes = tuple(int(x) for x in args.msfe_patch_sizes.split(","))
+            if args.msfe_loc in ("encoder", "both"):
+                try:
+                    dim_enc = model.image_encoder.neck[0].out_channels
+                except Exception:
+                    dim_enc = 256
+                msfe_enc = MultiScaleFrequencyEnhancement(
+                    dim=dim_enc,
+                    patch_sizes=patch_sizes,
+                    num_radial_bins=args.msfe_num_bins,
+                    fusion_method=args.msfe_fusion,
+                )
+                model.image_encoder.msfe_gate = msfe_enc
+                model.image_encoder.msfe_strength = float(args.msfe_strength_enc)
+                log_line(f"Attached MSFE to encoder (dim={dim_enc}, patches={patch_sizes}, bins={args.msfe_num_bins}, fusion={args.msfe_fusion})", args.log_file)
+            if args.msfe_loc in ("decoder", "both"):
+                c_dec = getattr(model.mask_decoder, "transformer_dim", 256) // 8
+                msfe_dec = MultiScaleFrequencyEnhancement(
+                    dim=c_dec,
+                    patch_sizes=patch_sizes,
+                    num_radial_bins=args.msfe_num_bins,
+                    fusion_method=args.msfe_fusion,
+                )
+                model.mask_decoder.msfe_gate = msfe_dec
+                model.mask_decoder.msfe_strength_dec = float(args.msfe_strength_dec)
+                log_line(f"Attached MSFE to decoder (dim={c_dec}, patches={patch_sizes}, bins={args.msfe_num_bins}, fusion={args.msfe_fusion})", args.log_file)
+        except Exception as e:
+            log_line(f"[warn] Failed to attach MSFE: {e}", args.log_file)
+    # Attach Task Tokens (Learnable Prompt Tokens) if requested
+    if getattr(args, "use_task_tokens", False):
+        try:
+            embed_dim = model.prompt_encoder.embed_dim
+            num_tokens = args.num_task_tokens
+            init_scale = args.task_token_init_scale
+            # Create learnable task tokens and attach to prompt_encoder
+            task_tokens = torch.nn.Parameter(
+                torch.randn(1, num_tokens, embed_dim) * init_scale
+            )
+            model.prompt_encoder.task_tokens = task_tokens
+            log_line(f"Attached Task Tokens to PromptEncoder (num_tokens={num_tokens}, embed_dim={embed_dim}, init_scale={init_scale})", args.log_file)
+        except Exception as e:
+            log_line(f"[warn] Failed to attach Task Tokens: {e}", args.log_file)
     model.to(device)
 
     pgap = None
@@ -840,7 +1565,39 @@ def main():
         ).to(device)
         pgap.eval()
 
-    # Freeze encoder first
+    # Initialize FAB Loss (Frequency-Aware Boundary Loss) if requested
+    fab_criterion = None
+    if getattr(args, "use_fab_loss", False):
+        try:
+            from efficient_sam.fab_loss import build_fab_loss
+            fab_criterion = build_fab_loss(
+                num_bins=args.fab_num_bins,
+                boundary_width=args.fab_boundary_width,
+                high_freq_weight=args.fab_high_freq_weight,
+                use_multiscale=True,
+            ).to(device)
+            log_line(f"Initialized FAB Loss (bins={args.fab_num_bins}, boundary_width={args.fab_boundary_width}, high_freq_weight={args.fab_high_freq_weight})", args.log_file)
+        except Exception as e:
+            log_line(f"[warn] Failed to initialize FAB Loss: {e}", args.log_file)
+
+    # Initialize SCR Loss (Signal-to-Clutter Ratio Loss) if requested
+    scr_criterion = None
+    if getattr(args, "use_scr_loss", False):
+        try:
+            from efficient_sam.scr_loss import build_scr_loss
+            scr_criterion = build_scr_loss(
+                annular_inner_k=args.scr_inner_k,
+                annular_outer_k=args.scr_outer_k,
+            ).to(device)
+            log_line(f"Initialized SCR Loss (inner_k={args.scr_inner_k}, outer_k={args.scr_outer_k}, weight={args.scr_weight})", args.log_file)
+        except Exception as e:
+            log_line(f"[warn] Failed to initialize SCR Loss: {e}", args.log_file)
+
+    # Log Prompt-Robust Loss config
+    if getattr(args, "use_prompt_robust_loss", False):
+        log_line(f"Enabled Prompt-Robust Consistency Loss (weight={args.prompt_robust_weight}, perturb_std={args.prompt_robust_perturb_std})", args.log_file)
+
+    # Stage-1: freeze image encoder
     for p_ in model.image_encoder.parameters():
         p_.requires_grad = False
     if args.use_fs_adapter:
@@ -858,6 +1615,7 @@ def main():
             log_line(f"[warn] Failed to enable FSAdapter during freeze: {e}", args.log_file)
 
     # Configure which head params are trainable initially
+    # Follow HQ-SAM: only train HQ-specific layers by default
     def mark_maskdecoder_stage1(md):
         for n, p in md.named_parameters():
             p.requires_grad = False
@@ -881,6 +1639,7 @@ def main():
     for p_ in model.prompt_encoder.parameters():
         p_.requires_grad = bool(args.train_prompt_encoder_during_freeze)
 
+    # Collect params for optimizer
     head_params = [p for p in list(model.prompt_encoder.parameters()) + list(model.mask_decoder.parameters()) if p.requires_grad]
     if hasattr(model, "saliency_adapter") and model.saliency_adapter is not None:
         head_params += list(model.saliency_adapter.parameters())
@@ -888,19 +1647,169 @@ def main():
         head_params += list(model.ms_aggregator.parameters())
     if hasattr(model, "detail_enhancer") and model.detail_enhancer is not None:
         head_params += list(model.detail_enhancer.parameters())
-    enc_params = [p_ for p_ in model.image_encoder.parameters() if p_.requires_grad]
 
-    optimizer = torch.optim.AdamW([
-        {"params": head_params, "lr": args.lr_head},
-        {"params": enc_params, "lr": args.lr_encoder},
-    ], weight_decay=args.weight_decay)
-    scaler = GradScaler()
+    # MLLM text modules (global CLIP feature -> FiLM / sparse prompt / dense mask prompt)
+    text_conditioner = None
+    text_sparse_prompt = None
+    text_dense_prompt = None
+    bifusion_adapter = None
+    backbone_bifusion_adapter = None
+    pgap_text_prior_only = bool(getattr(args, "pgap_text_prior_only", False))
+    if getattr(args, "use_mllm_prompt", False):
+        img_dim = 256  # EfficientSAM-ViTT image embedding dim
+        if not pgap_text_prior_only:
+            text_conditioner = build_text_conditioner(
+                img_dim=img_dim,
+                text_dim=args.mllm_text_dim,
+            ).to(device)
+            head_params += list(text_conditioner.parameters())
+            n_tc = sum(p.numel() for p in text_conditioner.parameters())
+            log_line(f"MLLM TextConditioner enabled: text_dim={args.mllm_text_dim}, params={n_tc}", args.log_file)
+        else:
+            log_line("MLLM TextConditioner disabled by --pgap_text_prior_only.", args.log_file)
+        if getattr(args, "use_text_sparse_prompt", False) and not pgap_text_prior_only:
+            text_sparse_prompt = build_text_sparse_prompt_projector(
+                text_dim=args.mllm_text_dim,
+                embed_dim=getattr(model.prompt_encoder, "embed_dim", 256),
+                num_tokens=max(1, int(args.text_sparse_num_tokens)),
+                init_scale=float(args.text_sparse_init_scale),
+            ).to(device)
+            head_params += list(text_sparse_prompt.parameters())
+            n_tsp = sum(p.numel() for p in text_sparse_prompt.parameters())
+            log_line(
+                f"Text sparse prompt enabled: tokens={args.text_sparse_num_tokens}, params={n_tsp}",
+                args.log_file,
+            )
+        elif getattr(args, "use_text_sparse_prompt", False) and pgap_text_prior_only:
+            log_line("[info] Ignoring --use_text_sparse_prompt because --pgap_text_prior_only is enabled.", args.log_file)
+        if getattr(args, "use_text_dense_prompt", False):
+            dense_variant = getattr(args, "text_dense_prompt_type", "global")
+            if dense_variant == "token_xattn":
+                text_dense_prompt = build_text_dense_mask_prompt_generator_v2(
+                    img_dim=img_dim,
+                    text_dim=args.mllm_text_dim,
+                    hidden_dim=max(8, int(args.text_dense_hidden_dim)),
+                    num_heads=max(1, int(args.text_dense_num_heads)),
+                ).to(device)
+            else:
+                text_dense_prompt = build_text_dense_mask_prompt_generator(
+                    img_dim=img_dim,
+                    text_dim=args.mllm_text_dim,
+                    hidden_dim=max(8, int(args.text_dense_hidden_dim)),
+                ).to(device)
+            head_params += list(text_dense_prompt.parameters())
+            n_tdp = sum(p.numel() for p in text_dense_prompt.parameters())
+            log_line(
+                f"Text dense mask prompt enabled: type={dense_variant}, hidden={args.text_dense_hidden_dim}, "
+                f"heads={getattr(args, 'text_dense_num_heads', 4)}, alpha={args.text_dense_prompt_merge_alpha}, params={n_tdp}",
+                args.log_file,
+            )
+        if getattr(args, "use_bifusion_adapter", False):
+            if pgap_text_prior_only:
+                log_line("[info] Disabling BiFusion due to --pgap_text_prior_only.", args.log_file)
+            else:
+                try:
+                    interms_dim = int(model.image_encoder.patch_embed.proj.out_channels)
+                except Exception:
+                    interms_dim = int(getattr(args, "bifusion_interms_dim", 192))
+                bifusion_adapter = build_bifusion_adapter_lite(
+                    img_dim=img_dim,
+                    interms_dim=interms_dim,
+                    text_dim=args.mllm_text_dim,
+                    hidden_dim=max(8, int(args.bifusion_hidden_dim)),
+                    num_heads=max(1, int(args.bifusion_num_heads)),
+                    use_interms_level=not bool(getattr(args, "bifusion_disable_interms_level", False)),
+                    img_res_scale=float(getattr(args, "bifusion_img_res_scale", 1.0)),
+                    interms_res_scale=float(getattr(args, "bifusion_interms_res_scale", 1.0)),
+                    text_res_scale=float(getattr(args, "bifusion_text_res_scale", 1.0)),
+                ).to(device)
+                head_params += list(bifusion_adapter.parameters())
+                n_bf = sum(p.numel() for p in bifusion_adapter.parameters())
+                log_line(
+                    f"BiFusion adapter enabled: interms+img levels, hidden={args.bifusion_hidden_dim}, "
+                    f"heads={args.bifusion_num_heads}, params={n_bf}",
+                    args.log_file,
+                )
+        if getattr(args, "use_bifusion_backbone_blocks", False):
+            if pgap_text_prior_only:
+                log_line("[info] Disabling backbone BiFusion due to --pgap_text_prior_only.", args.log_file)
+            else:
+                try:
+                    vision_dim = int(model.image_encoder.patch_embed.proj.out_channels)
+                except Exception:
+                    vision_dim = int(getattr(args, "bifusion_interms_dim", 192))
+                num_layers = len(getattr(model.image_encoder, "blocks", []))
+                backbone_bifusion_adapter = build_backbone_bifusion_block_adapter(
+                    num_layers=max(1, int(num_layers)),
+                    vision_dim=vision_dim,
+                    text_dim=args.mllm_text_dim,
+                    hidden_dim=max(8, int(args.bifusion_hidden_dim)),
+                    num_heads=max(1, int(args.bifusion_num_heads)),
+                    apply_every=max(1, int(getattr(args, "bifusion_block_apply_every", 1))),
+                    vision_res_scale=float(getattr(args, "bifusion_block_vision_res_scale", 1.0)),
+                    text_res_scale=float(getattr(args, "bifusion_block_text_res_scale", 1.0)),
+                ).to(device)
+                head_params += list(backbone_bifusion_adapter.parameters())
+                if hasattr(model.image_encoder, "set_text_block_fuser"):
+                    model.image_encoder.set_text_block_fuser(backbone_bifusion_adapter)
+                else:
+                    model.image_encoder.block_text_fuser = backbone_bifusion_adapter
+                n_bfb = sum(p.numel() for p in backbone_bifusion_adapter.parameters())
+                log_line(
+                    f"Backbone BiFusion enabled: layers={num_layers}, hidden={args.bifusion_hidden_dim}, "
+                    f"heads={args.bifusion_num_heads}, every={getattr(args, 'bifusion_block_apply_every', 1)}, params={n_bfb}",
+                    args.log_file,
+                )
+    elif (
+        getattr(args, "use_text_sparse_prompt", False)
+        or getattr(args, "use_text_dense_prompt", False)
+        or getattr(args, "use_bifusion_backbone_blocks", False)
+    ):
+        log_line("[warn] Text sparse/dense/backbone-bifusion flags require --use_mllm_prompt; ignoring.", args.log_file)
+    elif getattr(args, "use_bifusion_adapter", False):
+        log_line("[warn] --use_bifusion_adapter requires --use_mllm_prompt; ignoring.", args.log_file)
+    if getattr(args, "pgap_text_fuse_internal", False):
+        if not getattr(args, "use_pgap", False):
+            log_line("[warn] --pgap_text_fuse_internal is set but --use_pgap is disabled; internal fusion will not run.", args.log_file)
+        if not (getattr(args, "use_mllm_prompt", False) and getattr(args, "use_text_dense_prompt", False)):
+            log_line("[warn] --pgap_text_fuse_internal requires --use_mllm_prompt and --use_text_dense_prompt for text prior; falling back to PGAP-only prompts.", args.log_file)
+    if getattr(args, "pgap_text_prior_only", False):
+        if not getattr(args, "use_pgap", False):
+            log_line("[warn] --pgap_text_prior_only has no effect because --use_pgap is disabled.", args.log_file)
+        if not getattr(args, "pgap_text_fuse_internal", False):
+            log_line("[warn] --pgap_text_prior_only is set without --pgap_text_fuse_internal; text will not affect PGAP prompts.", args.log_file)
+    head_params = _dedup_trainable_params(head_params)
+    enc_params = _exclude_params(model.image_encoder.parameters(), head_params)
+
+    optimizer = torch.optim.AdamW(
+        [
+            {"params": head_params, "lr": args.lr_head},
+            {"params": enc_params, "lr": args.lr_encoder},
+        ],
+        weight_decay=args.weight_decay,
+    )
+    scaler = make_scaler(device)
 
     best_iou = -1.0
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
-        train_loss = train_one_epoch(model, train_loader, optimizer, scaler, device, epoch, args, pgap=pgap)
-        miou, niou, mf1, pd_val, fa_val, thr_used = validate(model, val_loader, device, args, epoch, pgap=pgap)
+        train_loss = train_one_epoch(
+            model, train_loader, optimizer, scaler, device, epoch, args,
+            pgap=pgap, fab_criterion=fab_criterion, scr_criterion=scr_criterion,
+            text_conditioner=text_conditioner,
+            text_sparse_prompt=text_sparse_prompt,
+            text_dense_prompt=text_dense_prompt,
+            bifusion_adapter=bifusion_adapter,
+            backbone_bifusion_adapter=backbone_bifusion_adapter,
+        )
+        miou, niou, mf1, pd_val, fa_val, thr_used = validate(
+            model, val_loader, device, args, epoch, pgap=pgap,
+            text_conditioner=text_conditioner,
+            text_sparse_prompt=text_sparse_prompt,
+            text_dense_prompt=text_dense_prompt,
+            bifusion_adapter=bifusion_adapter,
+            backbone_bifusion_adapter=backbone_bifusion_adapter,
+        )
         dt = time.time() - t0
         log_line(
             f"[Epoch {epoch:03d}] loss={train_loss:.4f} miou={miou:.4f} niou={niou:.4f} f1={mf1:.4f} "
@@ -908,6 +1817,7 @@ def main():
             args.log_file,
         )
 
+        # Unfreeze schedule
         unfreeze_epoch = (args.epochs // 4) if (args.freeze_encoder_epochs is None or args.freeze_encoder_epochs <= 0) else args.freeze_encoder_epochs
         if epoch == max(1, unfreeze_epoch):
             for p_ in model.image_encoder.parameters():
@@ -925,11 +1835,25 @@ def main():
                 head_params += list(model.ms_aggregator.parameters())
             if hasattr(model, "detail_enhancer") and model.detail_enhancer is not None:
                 head_params += list(model.detail_enhancer.parameters())
-            enc_params = [p_ for p_ in model.image_encoder.parameters() if p_.requires_grad]
-            optimizer = torch.optim.AdamW([
-                {"params": head_params, "lr": args.lr_head},
-                {"params": enc_params, "lr": args.lr_encoder},
-            ], weight_decay=args.weight_decay)
+            if text_conditioner is not None:
+                head_params += list(text_conditioner.parameters())
+            if text_sparse_prompt is not None:
+                head_params += list(text_sparse_prompt.parameters())
+            if text_dense_prompt is not None:
+                head_params += list(text_dense_prompt.parameters())
+            if bifusion_adapter is not None:
+                head_params += list(bifusion_adapter.parameters())
+            if backbone_bifusion_adapter is not None:
+                head_params += list(backbone_bifusion_adapter.parameters())
+            head_params = _dedup_trainable_params(head_params)
+            enc_params = _exclude_params(model.image_encoder.parameters(), head_params)
+            optimizer = torch.optim.AdamW(
+                [
+                    {"params": head_params, "lr": args.lr_head},
+                    {"params": enc_params, "lr": args.lr_encoder},
+                ],
+                weight_decay=args.weight_decay,
+            )
             log_line(
                 f"Unfroze at epoch {epoch}: encoder + {'all heads' if args.unfreeze_all_when_encoder else 'keep current head mask' }.",
                 args.log_file,
@@ -945,6 +1869,16 @@ def main():
             "best_iou": best_iou,
             "args": vars(args),
         }
+        if text_conditioner is not None:
+            ckpt["text_conditioner"] = text_conditioner.state_dict()
+        if text_sparse_prompt is not None:
+            ckpt["text_sparse_prompt"] = text_sparse_prompt.state_dict()
+        if text_dense_prompt is not None:
+            ckpt["text_dense_prompt"] = text_dense_prompt.state_dict()
+        if bifusion_adapter is not None:
+            ckpt["bifusion_adapter"] = bifusion_adapter.state_dict()
+        if backbone_bifusion_adapter is not None:
+            ckpt["backbone_bifusion_adapter"] = backbone_bifusion_adapter.state_dict()
         if is_best:
             metric_tag = format_metric_tag(epoch, miou, niou, mf1, pd_val, fa_val)
             torch.save(ckpt, os.path.join(args.out_dir, f"best_{metric_tag}.pt"))
@@ -953,7 +1887,5 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
 
 

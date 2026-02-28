@@ -1,0 +1,19 @@
+Run directory: ./outputs_sam_sirst_hq\IRSTD1k_HQ_mllm_Qwen3_tokenCLIP_BiFusion_TSP1_TDPxattn03_SC_20260227_113427
+MLLM TextConditioner enabled: text_dim=512, params=262656
+Text sparse prompt enabled: tokens=1, params=262912
+Text dense mask prompt enabled: type=token_xattn, hidden=128, heads=4, alpha=0.3, params=525697
+BiFusion adapter enabled: interms+img levels, hidden=128, heads=4, params=511296
+[Epoch 001] loss=1.0302 miou=0.0000 niou=0.2836 f1=0.0000 pd=0.0000 fa=0.000000 thr=0.35 time=40.6s
+[Epoch 002] loss=0.5652 miou=0.5370 niou=0.6301 f1=0.6988 pd=0.7941 fa=0.000146 thr=0.42 time=40.4s
+[Epoch 003] loss=0.3343 miou=0.5678 niou=0.6631 f1=0.7244 pd=0.9320 fa=0.000128 thr=0.44 time=38.9s
+[Epoch 004] loss=0.2960 miou=0.5970 niou=0.6635 f1=0.7477 pd=0.9078 fa=0.000148 thr=0.42 time=37.0s
+[Epoch 005] loss=0.2940 miou=0.6337 niou=0.7038 f1=0.7758 pd=0.9471 fa=0.000065 thr=0.44 time=36.9s
+[Epoch 006] loss=0.2915 miou=0.6144 niou=0.6996 f1=0.7612 pd=0.9265 fa=0.000061 thr=0.41 time=36.8s
+[Epoch 007] loss=0.2733 miou=0.6464 niou=0.7207 f1=0.7852 pd=0.9394 fa=0.000033 thr=0.41 time=36.8s
+[Epoch 008] loss=0.2456 miou=0.6553 niou=0.7032 f1=0.7917 pd=0.9471 fa=0.000055 thr=0.44 time=36.4s
+[Epoch 009] loss=0.2625 miou=0.6553 niou=0.6999 f1=0.7918 pd=0.9505 fa=0.000053 thr=0.43 time=37.5s
+[Epoch 010] loss=0.2738 miou=0.5440 niou=0.6873 f1=0.7047 pd=0.9579 fa=0.000220 thr=0.48 time=41.4s
+[Epoch 011] loss=0.2553 miou=0.6189 niou=0.7343 f1=0.7646 pd=0.9551 fa=0.000065 thr=0.40 time=37.4s
+[Epoch 012] loss=0.2497 miou=0.6575 niou=0.7031 f1=0.7934 pd=0.9663 fa=0.000047 thr=0.43 time=37.2s
+[Epoch 013] loss=0.2392 miou=0.6389 niou=0.7475 f1=0.7797 pd=0.9312 fa=0.000068 thr=0.40 time=37.3s
+[Epoch 014] loss=0.2456 miou=0.6622 niou=0.7278 f1=0.7967 pd=0.9697 fa=0.000046 thr=0.44 time=36.9s

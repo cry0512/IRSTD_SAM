@@ -1,0 +1,26 @@
+Run directory: ./outputs_sam_sirst_hq\NUDT_HQ_radial_mllm_20260224_172220
+Using SCTransNet-style preprocessing (grayscale, random crop, dataset normalization)
+MLLM TextConditioner enabled: text_dim=512, params=262656
+[Epoch 001] loss=1.2618 miou=0.0350 niou=0.0445 f1=0.0676 pd=0.4561 fa=0.001038 thr=0.44 time=45.0s
+[Epoch 002] loss=0.9325 miou=0.1134 niou=0.3058 f1=0.2037 pd=0.9217 fa=0.002441 thr=0.49 time=41.5s
+[Epoch 003] loss=0.7298 miou=0.1625 niou=0.3854 f1=0.2796 pd=0.8931 fa=0.001484 thr=0.46 time=40.7s
+[Epoch 004] loss=0.6710 miou=0.1819 niou=0.4037 f1=0.3077 pd=0.8709 fa=0.001270 thr=0.45 time=40.7s
+[Epoch 005] loss=0.6477 miou=0.2074 niou=0.4244 f1=0.3436 pd=0.8804 fa=0.000986 thr=0.43 time=40.4s
+[Epoch 006] loss=0.6225 miou=0.1889 niou=0.4292 f1=0.3178 pd=0.9238 fa=0.001420 thr=0.46 time=40.5s
+[Epoch 007] loss=0.6021 miou=0.2563 niou=0.4493 f1=0.4081 pd=0.8550 fa=0.000639 thr=0.42 time=40.5s
+[Epoch 008] loss=0.5801 miou=0.1898 niou=0.4581 f1=0.3190 pd=0.9280 fa=0.001587 thr=0.46 time=44.1s
+[Epoch 009] loss=0.5510 miou=0.2346 niou=0.4753 f1=0.3800 pd=0.9238 fa=0.001049 thr=0.44 time=47.1s
+[Epoch 010] loss=0.5381 miou=0.2082 niou=0.4630 f1=0.3446 pd=0.9302 fa=0.001432 thr=0.48 time=45.7s
+[Epoch 011] loss=0.5430 miou=0.2524 niou=0.4788 f1=0.4031 pd=0.9217 fa=0.000968 thr=0.46 time=40.9s
+[Epoch 012] loss=0.5148 miou=0.2718 niou=0.4978 f1=0.4274 pd=0.9175 fa=0.000865 thr=0.45 time=41.5s
+[Epoch 013] loss=0.4969 miou=0.2401 niou=0.4903 f1=0.3872 pd=0.9270 fa=0.001131 thr=0.47 time=41.9s
+[Epoch 014] loss=0.4881 miou=0.3185 niou=0.5058 f1=0.4831 pd=0.9111 fa=0.000572 thr=0.43 time=40.2s
+[Epoch 015] loss=0.4760 miou=0.2451 niou=0.5024 f1=0.3937 pd=0.9418 fa=0.001196 thr=0.46 time=40.7s
+[Epoch 016] loss=0.4695 miou=0.3292 niou=0.5299 f1=0.4954 pd=0.9344 fa=0.000628 thr=0.44 time=40.7s
+[Epoch 017] loss=0.4551 miou=0.3043 niou=0.5143 f1=0.4666 pd=0.9312 fa=0.000715 thr=0.44 time=40.8s
+[Epoch 018] loss=0.4632 miou=0.2953 niou=0.5048 f1=0.4559 pd=0.9450 fa=0.000853 thr=0.46 time=40.9s
+[Epoch 019] loss=0.4442 miou=0.3487 niou=0.5471 f1=0.5171 pd=0.9291 fa=0.000594 thr=0.45 time=42.8s
+[Epoch 020] loss=0.4361 miou=0.4040 niou=0.5362 f1=0.5755 pd=0.9058 fa=0.000292 thr=0.41 time=40.7s
+[Epoch 021] loss=0.4247 miou=0.3726 niou=0.5522 f1=0.5429 pd=0.9376 fa=0.000487 thr=0.43 time=40.9s
+[Epoch 022] loss=0.4220 miou=0.3723 niou=0.5363 f1=0.5426 pd=0.9407 fa=0.000477 thr=0.44 time=40.5s
+[Epoch 023] loss=0.4191 miou=0.3754 niou=0.5568 f1=0.5459 pd=0.9429 fa=0.000555 thr=0.45 time=41.0s

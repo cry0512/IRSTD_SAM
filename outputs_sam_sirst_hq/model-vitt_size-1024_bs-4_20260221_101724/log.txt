@@ -1,0 +1,1 @@
+Run directory: ./outputs_sam_sirst_hq\model-vitt_size-1024_bs-4_20260221_101724

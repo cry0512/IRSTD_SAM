@@ -1,0 +1,3 @@
+Run directory: ./outputs_sam_sirst_hq\NUDT_HQ_RadialGate_SFJP_20260204_175000
+Using SCTransNet-style preprocessing (grayscale, random crop, dataset normalization)
+Initialized SFJP encoder (embed_dim=256, spatial_ch=64, freq_ch=64)

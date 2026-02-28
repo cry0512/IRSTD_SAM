@@ -136,6 +136,7 @@ class PromptEncoderHQ(nn.Module):
         points: Optional[Tuple[torch.Tensor, torch.Tensor]],
         boxes: Optional[torch.Tensor],
         masks: Optional[torch.Tensor],
+        text_embeds: Optional[torch.Tensor],
     ) -> int:
         if points is not None:
             return points[0].shape[0]
@@ -143,6 +144,8 @@ class PromptEncoderHQ(nn.Module):
             return boxes.shape[0]
         elif masks is not None:
             return masks.shape[0]
+        elif text_embeds is not None:
+            return text_embeds.shape[0]
         else:
             return 1
 
@@ -154,9 +157,16 @@ class PromptEncoderHQ(nn.Module):
         points: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         boxes: Optional[torch.Tensor] = None,
         masks: Optional[torch.Tensor] = None,
+        text_embeds: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        bs = self._get_batch_size(points, boxes, masks)
+        bs = self._get_batch_size(points, boxes, masks, text_embeds)
         sparse_embeddings = torch.empty((bs, 0, self.embed_dim), device=self._get_device())
+        
+        # Prepend task tokens if attached (dynamic attachment from training script)
+        if getattr(self, "task_tokens", None) is not None:
+            task_tokens_expanded = self.task_tokens.expand(bs, -1, -1)
+            sparse_embeddings = torch.cat([sparse_embeddings, task_tokens_expanded], dim=1)
+        
         if points is not None:
             coords, labels = points
             point_embeddings = self._embed_points(coords, labels, pad=(boxes is None))
@@ -164,6 +174,9 @@ class PromptEncoderHQ(nn.Module):
         if boxes is not None:
             box_embeddings = self._embed_boxes(boxes)
             sparse_embeddings = torch.cat([sparse_embeddings, box_embeddings], dim=1)
+        if text_embeds is not None:
+            text_embeds = text_embeds.to(device=sparse_embeddings.device, dtype=sparse_embeddings.dtype)
+            sparse_embeddings = torch.cat([sparse_embeddings, text_embeds], dim=1)
 
         if masks is not None:
             dense_embeddings = self._embed_masks(masks)
@@ -174,3 +187,50 @@ class PromptEncoderHQ(nn.Module):
 
         return sparse_embeddings, dense_embeddings
 
+
+class TaskTokenModule(nn.Module):
+    """
+    可学习的任务特定 Token 模块 (Learnable Task-Specific Tokens)
+    
+    设计思想:
+    类似于 Prompt Tuning / Prefix Tuning，在 sparse embeddings 前面添加
+    可学习的 token，让模型学习任务特定的先验知识。
+    
+    对于红外小目标检测，这些 token 可以学习:
+    - "这是一个小目标检测任务"
+    - "关注边缘细节"
+    - "抑制背景噪声"
+    
+    使用方式 (在训练脚本中动态附加):
+        task_token_module = TaskTokenModule(embed_dim=256, num_tokens=2)
+        model.prompt_encoder.task_tokens = task_token_module.tokens
+        # 或直接:
+        model.prompt_encoder.task_tokens = nn.Parameter(torch.randn(1, 2, 256) * 0.02)
+    
+    Args:
+        embed_dim: 嵌入维度，必须与 PromptEncoder 的 embed_dim 一致
+        num_tokens: 任务 token 数量，通常 1-4 个
+        init_scale: 初始化缩放因子，小值避免破坏预训练权重
+    """
+    
+    def __init__(
+        self,
+        embed_dim: int,
+        num_tokens: int = 2,
+        init_scale: float = 0.02,
+    ):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_tokens = num_tokens
+        
+        # 可学习的 task tokens
+        self.tokens = nn.Parameter(
+            torch.randn(1, num_tokens, embed_dim) * init_scale
+        )
+    
+    def forward(self, batch_size: int) -> torch.Tensor:
+        """返回 batch 扩展后的 task tokens"""
+        return self.tokens.expand(batch_size, -1, -1)
+    
+    def extra_repr(self) -> str:
+        return f'embed_dim={self.embed_dim}, num_tokens={self.num_tokens}'

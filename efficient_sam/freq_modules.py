@@ -288,3 +288,382 @@ class FFTformerDFFNLite(nn.Module):
         x = self.project_out(x)
         return x
 
+
+class AdaptiveFrequencyDecomposition(nn.Module):
+    """
+    自适应频率分解模块 (Adaptive Frequency Decomposition, AFD) V2
+    
+    核心思想:
+    1. 将特征图转换到频域
+    2. 使用可学习网络预测每张图像的最优频率切分点
+    3. 根据切分点分离高频和低频分量
+    4. 使用可学习增益参数处理高低频后融合
+    
+    V2改进:
+    - 将固定的low_ratio/high_ratio改为可学习的nn.Parameter
+    - 增益初始化为1.0，避免初始阶段过度抑制/增强
+    - 添加可选的通道级增益调制
+    
+    Args:
+        dim (int): 输入特征通道数
+        patch_size (int): FFT处理的patch大小，默认8
+        num_cutoff_bins (int): 切分点预测的离散化粒度，默认16
+        low_enhance_ratio (float): 低频增益初始值，默认1.0 (V2中仅作初始化用)
+        high_enhance_ratio (float): 高频增益初始值，默认1.0 (V2中仅作初始化用)
+        learnable_gains (bool): 是否使用可学习增益，默认True
+        channel_wise_gains (bool): 是否使用通道级独立增益，默认False
+    """
+    
+    def __init__(
+        self,
+        dim: int,
+        patch_size: int = 8,
+        num_cutoff_bins: int = 16,
+        low_enhance_ratio: float = 1.0,
+        high_enhance_ratio: float = 1.0,
+        learnable_gains: bool = True,
+        channel_wise_gains: bool = False,
+    ):
+        super().__init__()
+        self.dim = dim
+        self.patch_size = patch_size
+        self.num_bins = num_cutoff_bins
+        self.learnable_gains = learnable_gains
+        self.channel_wise_gains = channel_wise_gains
+        
+        # ========== 1. 可学习的频率增益参数 ==========
+        if learnable_gains:
+            if channel_wise_gains:
+                # 每个通道独立的增益
+                self.low_gain = nn.Parameter(torch.ones(dim) * low_enhance_ratio)
+                self.high_gain = nn.Parameter(torch.ones(dim) * high_enhance_ratio)
+            else:
+                # 全局共享的增益
+                self.low_gain = nn.Parameter(torch.tensor(low_enhance_ratio))
+                self.high_gain = nn.Parameter(torch.tensor(high_enhance_ratio))
+        else:
+            # 保持向后兼容：固定增益
+            self.register_buffer('low_gain', torch.tensor(low_enhance_ratio))
+            self.register_buffer('high_gain', torch.tensor(high_enhance_ratio))
+        
+        # 保存原始值用于 extra_repr
+        self._init_low_ratio = low_enhance_ratio
+        self._init_high_ratio = high_enhance_ratio
+        
+        # ========== 2. 切分点预测网络 ==========
+        # 根据全局特征预测最优的高低频切分点
+        self.cutoff_predictor = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(dim, dim // 4),
+            nn.ReLU(inplace=True),
+            nn.Linear(dim // 4, num_cutoff_bins),
+            nn.Softmax(dim=-1),
+        )
+        
+        # ========== 3. 高频增强分支 ==========
+        self.high_freq_enhance = nn.Sequential(
+            nn.Conv2d(dim, dim, 3, padding=1, groups=dim),
+            nn.BatchNorm2d(dim),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(dim, dim, 1),
+        )
+        
+        # ========== 4. 低频处理分支 ==========
+        self.low_freq_process = nn.Sequential(
+            nn.Conv2d(dim, dim, 5, padding=2, groups=dim),
+            nn.BatchNorm2d(dim),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(dim, dim, 1),
+        )
+        
+        # ========== 5. 融合门控 ==========
+        self.fusion_gate = nn.Sequential(
+            nn.Conv2d(dim * 2, dim, 1),
+            nn.Sigmoid(),
+        )
+        
+        # ========== 5. 预计算径向频率模板 ==========
+        self._precompute_radial_template()
+    
+    def _precompute_radial_template(self):
+        """预计算归一化径向频率模板"""
+        ps = self.patch_size
+        fy = torch.fft.fftfreq(ps)
+        fx = torch.fft.rfftfreq(ps)
+        grid_fy, grid_fx = torch.meshgrid(fy, fx, indexing='ij')
+        radial_dist = torch.sqrt(grid_fy ** 2 + grid_fx ** 2)
+        radial_dist = radial_dist / (radial_dist.max() + 1e-8)
+        bin_indices = (radial_dist * (self.num_bins - 1)).long()
+        bin_indices = bin_indices.clamp(0, self.num_bins - 1)
+        self.register_buffer('radial_template', radial_dist)
+        self.register_buffer('bin_indices', bin_indices)
+    
+    def _pad_to_multiple(self, x: torch.Tensor, multiple: int):
+        B, C, H, W = x.shape
+        pad_h = (multiple - H % multiple) % multiple
+        pad_w = (multiple - W % multiple) % multiple
+        if pad_h > 0 or pad_w > 0:
+            x = F.pad(x, (0, pad_w, 0, pad_h), mode='reflect')
+        return x, (pad_h, pad_w)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, C, H, W = x.shape
+        identity = x
+        
+        # Step 1: 预测自适应切分点
+        cutoff_probs = self.cutoff_predictor(x)
+        bin_centers = torch.linspace(0, 1, self.num_bins, device=x.device)
+        weighted_cutoff = (cutoff_probs * bin_centers.unsqueeze(0)).sum(dim=1)
+        
+        # Step 2: 填充并分块
+        x_padded, pad_hw = self._pad_to_multiple(x, self.patch_size)
+        Bp, Cp, Hp, Wp = x_padded.shape
+        ps = self.patch_size
+        n_h = Hp // ps
+        n_w = Wp // ps
+        
+        x_patches = x_padded.reshape(B, C, n_h, ps, n_w, ps)
+        x_patches = x_patches.permute(0, 2, 4, 1, 3, 5).reshape(-1, C, ps, ps)
+        
+        # Step 3: FFT分解
+        x_freq = torch.fft.rfft2(x_patches, norm='ortho')
+        
+        # Step 4: 自适应高低频分离
+        cutoff_expanded = weighted_cutoff.unsqueeze(1).unsqueeze(2).unsqueeze(3)
+        cutoff_expanded = cutoff_expanded.repeat(1, n_h * n_w, 1, 1).reshape(-1, 1, 1, 1)
+        radial = self.radial_template.unsqueeze(0).unsqueeze(0)
+        
+        sharpness = 10.0
+        high_mask = torch.sigmoid(sharpness * (radial - cutoff_expanded))
+        low_mask = 1.0 - high_mask
+        
+        x_freq_high = x_freq * high_mask
+        x_freq_low = x_freq * low_mask
+        
+        # Step 5: 逆FFT回到空域
+        x_high = torch.fft.irfft2(x_freq_high, s=(ps, ps), norm='ortho')
+        x_low = torch.fft.irfft2(x_freq_low, s=(ps, ps), norm='ortho')
+        
+        x_high = x_high.reshape(B, n_h, n_w, C, ps, ps)
+        x_high = x_high.permute(0, 3, 1, 4, 2, 5).reshape(B, C, Hp, Wp)
+        x_low = x_low.reshape(B, n_h, n_w, C, ps, ps)
+        x_low = x_low.permute(0, 3, 1, 4, 2, 5).reshape(B, C, Hp, Wp)
+        
+        if pad_hw[0] > 0 or pad_hw[1] > 0:
+            x_high = x_high[:, :, :H, :W]
+            x_low = x_low[:, :, :H, :W]
+        
+        # Step 6: 分支处理 - 使用可学习增益
+        x_high_enhanced = self.high_freq_enhance(x_high)
+        x_low_processed = self.low_freq_process(x_low)
+        
+        # 应用可学习增益
+        if self.channel_wise_gains:
+            # 通道级增益: [C] -> [1, C, 1, 1]
+            high_gain = self.high_gain.view(1, -1, 1, 1)
+            low_gain = self.low_gain.view(1, -1, 1, 1)
+        else:
+            # 全局增益: scalar
+            high_gain = self.high_gain
+            low_gain = self.low_gain
+        
+        x_high_enhanced = x_high_enhanced * high_gain
+        x_low_processed = x_low_processed * low_gain
+        
+        # Step 7: 自适应融合
+        combined = torch.cat([x_high_enhanced, x_low_processed], dim=1)
+        gate = self.fusion_gate(combined)
+        output = gate * x_high_enhanced + (1 - gate) * x_low_processed
+        
+        return output + identity
+    
+    def extra_repr(self) -> str:
+        if self.learnable_gains:
+            low_val = self.low_gain.mean().item() if self.channel_wise_gains else self.low_gain.item()
+            high_val = self.high_gain.mean().item() if self.channel_wise_gains else self.high_gain.item()
+            gain_info = f'low_gain={low_val:.3f}(learnable), high_gain={high_val:.3f}(learnable)'
+        else:
+            gain_info = f'low_gain={self._init_low_ratio}, high_gain={self._init_high_ratio}(fixed)'
+        return (f'dim={self.dim}, patch_size={self.patch_size}, '
+                f'num_bins={self.num_bins}, {gain_info}')
+
+
+class MultiScaleFrequencyEnhancement(nn.Module):
+    """
+    多尺度频率增强模块 (Multi-Scale Frequency Enhancement, MSFE)
+    
+    核心思想:
+    1. 使用不同的 patch_size (4, 8, 16) 做 FFT 频率分解
+    2. 小 patch (4) 捕获局部高频细节（边缘、纹理）
+    3. 中 patch (8) 捕获中频信息
+    4. 大 patch (16) 捕获全局低频结构（形状、轮廓）
+    5. 每个尺度有独立的可学习频率增益
+    6. 使用注意力机制自适应融合不同尺度的输出
+    
+    Args:
+        dim (int): 输入特征通道数
+        patch_sizes (tuple): 不同尺度的 patch 大小列表，默认 (4, 8, 16)
+        num_radial_bins (int): 径向频率 bins 数量，默认 8
+        fusion_method (str): 融合方法，'attention' 或 'concat'，默认 'attention'
+    """
+    
+    def __init__(
+        self,
+        dim: int,
+        patch_sizes: tuple = (4, 8, 16),
+        num_radial_bins: int = 8,
+        fusion_method: str = 'attention',
+    ):
+        super().__init__()
+        self.dim = dim
+        self.patch_sizes = patch_sizes
+        self.num_scales = len(patch_sizes)
+        self.num_radial_bins = num_radial_bins
+        self.fusion_method = fusion_method
+        
+        # ========== 1. 每个尺度独立的可学习径向频率增益 ==========
+        self.radial_gains = nn.ParameterList([
+            nn.Parameter(torch.ones(num_radial_bins)) for _ in patch_sizes
+        ])
+        
+        # ========== 2. 预计算每个尺度的径向频率模板 ==========
+        for i, ps in enumerate(patch_sizes):
+            self._precompute_radial_template(ps, i)
+        
+        # ========== 3. 融合模块 ==========
+        if fusion_method == 'attention':
+            # 注意力融合: 根据输入自适应选择尺度权重
+            self.attention_fc = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
+                nn.Flatten(),
+                nn.Linear(dim, dim // 4),
+                nn.ReLU(inplace=True),
+                nn.Linear(dim // 4, self.num_scales),
+                nn.Softmax(dim=-1),
+            )
+        elif fusion_method == 'concat':
+            # Concat 融合: 拼接后用 1x1 conv 压缩
+            self.fusion_conv = nn.Sequential(
+                nn.Conv2d(dim * self.num_scales, dim, 1),
+                nn.BatchNorm2d(dim),
+                nn.ReLU(inplace=True),
+            )
+        
+        # ========== 4. 输出投影 ==========
+        self.output_proj = nn.Sequential(
+            nn.Conv2d(dim, dim, 3, padding=1, groups=dim),
+            nn.BatchNorm2d(dim),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(dim, dim, 1),
+        )
+    
+    def _precompute_radial_template(self, patch_size: int, scale_idx: int):
+        """预计算指定 patch_size 的归一化径向频率模板"""
+        ps = patch_size
+        fy = torch.fft.fftfreq(ps)
+        fx = torch.fft.rfftfreq(ps)
+        grid_fy, grid_fx = torch.meshgrid(fy, fx, indexing='ij')
+        radial_dist = torch.sqrt(grid_fy ** 2 + grid_fx ** 2)
+        radial_dist = radial_dist / (radial_dist.max() + 1e-8)
+        
+        # 将径向距离映射到 bin 索引
+        bin_indices = (radial_dist * (self.num_radial_bins - 1)).long()
+        bin_indices = bin_indices.clamp(0, self.num_radial_bins - 1)
+        
+        self.register_buffer(f'radial_dist_{scale_idx}', radial_dist)
+        self.register_buffer(f'bin_indices_{scale_idx}', bin_indices)
+    
+    def _pad_to_multiple(self, x: torch.Tensor, multiple: int):
+        B, C, H, W = x.shape
+        pad_h = (multiple - H % multiple) % multiple
+        pad_w = (multiple - W % multiple) % multiple
+        if pad_h > 0 or pad_w > 0:
+            x = F.pad(x, (0, pad_w, 0, pad_h), mode='reflect')
+        return x, (pad_h, pad_w)
+    
+    def _process_single_scale(self, x: torch.Tensor, scale_idx: int) -> torch.Tensor:
+        """处理单个尺度的频率增强"""
+        B, C, H, W = x.shape
+        ps = self.patch_sizes[scale_idx]
+        
+        # 填充到 patch_size 的倍数
+        x_padded, pad_hw = self._pad_to_multiple(x, ps)
+        Bp, Cp, Hp, Wp = x_padded.shape
+        n_h = Hp // ps
+        n_w = Wp // ps
+        
+        # 重排为 patches: [B*n_h*n_w, C, ps, ps]
+        x_patches = x_padded.reshape(B, C, n_h, ps, n_w, ps)
+        x_patches = x_patches.permute(0, 2, 4, 1, 3, 5).reshape(-1, C, ps, ps)
+        
+        # FFT
+        x_freq = torch.fft.rfft2(x_patches.float(), norm='ortho')
+        
+        # 获取该尺度的增益和 bin 索引
+        gains = self.radial_gains[scale_idx]  # [num_bins]
+        bin_indices = getattr(self, f'bin_indices_{scale_idx}')  # [ps, ps//2+1]
+        
+        # 根据 bin 索引查找增益
+        freq_gains = gains[bin_indices]  # [ps, ps//2+1]
+        freq_gains = freq_gains.unsqueeze(0).unsqueeze(0)  # [1, 1, ps, ps//2+1]
+        
+        # 应用增益
+        x_freq = x_freq * freq_gains
+        
+        # 逆 FFT
+        x_spatial = torch.fft.irfft2(x_freq, s=(ps, ps), norm='ortho')
+        
+        # 重排回原始形状
+        x_spatial = x_spatial.reshape(B, n_h, n_w, C, ps, ps)
+        x_spatial = x_spatial.permute(0, 3, 1, 4, 2, 5).reshape(B, C, Hp, Wp)
+        
+        # 裁剪掉 padding
+        if pad_hw[0] > 0 or pad_hw[1] > 0:
+            x_spatial = x_spatial[:, :, :H, :W]
+        
+        return x_spatial
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, C, H, W = x.shape
+        identity = x
+        
+        # 处理每个尺度
+        scale_outputs = []
+        for i in range(self.num_scales):
+            out_i = self._process_single_scale(x, i)
+            scale_outputs.append(out_i)
+        
+        # 融合
+        if self.fusion_method == 'attention':
+            # 计算注意力权重
+            attn_weights = self.attention_fc(x)  # [B, num_scales]
+            
+            # 加权融合
+            output = torch.zeros_like(x)
+            for i, out_i in enumerate(scale_outputs):
+                weight_i = attn_weights[:, i].view(B, 1, 1, 1)
+                output = output + weight_i * out_i
+        
+        elif self.fusion_method == 'concat':
+            # 拼接融合
+            concat = torch.cat(scale_outputs, dim=1)  # [B, C*num_scales, H, W]
+            output = self.fusion_conv(concat)
+        
+        else:
+            # 简单平均
+            output = torch.stack(scale_outputs, dim=0).mean(dim=0)
+        
+        # 输出投影
+        output = self.output_proj(output)
+        
+        return output + identity
+    
+    def extra_repr(self) -> str:
+        gains_info = []
+        for i, ps in enumerate(self.patch_sizes):
+            g = self.radial_gains[i]
+            gains_info.append(f'ps{ps}:[{g.min().item():.2f},{g.max().item():.2f}]')
+        return (f'dim={self.dim}, patch_sizes={self.patch_sizes}, '
+                f'num_radial_bins={self.num_radial_bins}, '
+                f'fusion={self.fusion_method}, gains={{{", ".join(gains_info)}}}')

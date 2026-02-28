@@ -106,7 +106,6 @@ class MaskDecoderHQ(nn.Module):
         src = image_embeddings + dense_prompt_embeddings
         pos_src = image_pe
         b, c, h, w = src.shape
-        b, c, h, w = src.shape
 
         # Transformer
         hs, src = self.transformer(src, pos_src, tokens)
@@ -127,7 +126,22 @@ class MaskDecoderHQ(nn.Module):
                 hq_features = hq_features + strength * self.radial_gate(hq_features)
             except Exception:
                 pass
-        # Shapes: both tensors already have batch B*Q,鏃犻渶閲嶅
+        # Optional AFD gate on HQ features
+        if getattr(self, "afd_gate", None) is not None:
+            try:
+                afd_strength = float(getattr(self, "afd_strength_dec", 0.5))
+                afd_delta = self.afd_gate(hq_features) - hq_features
+                hq_features = hq_features + afd_strength * afd_delta
+            except Exception:
+                pass
+        # Optional MSFE gate on HQ features
+        if getattr(self, "msfe_gate", None) is not None:
+            try:
+                msfe_strength = float(getattr(self, "msfe_strength_dec", 0.5))
+                msfe_delta = self.msfe_gate(hq_features) - hq_features
+                hq_features = hq_features + msfe_strength * msfe_delta
+            except Exception:
+                pass
         upscaled_embedding_hq = self.embedding_maskfeature(upscaled_embedding_sam) + hq_features
 
         # Hypernets

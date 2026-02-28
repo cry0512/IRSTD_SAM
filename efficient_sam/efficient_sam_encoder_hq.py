@@ -162,6 +162,7 @@ class ImageEncoderViTHQ(nn.Module):
         act_layer: Type[nn.Module],
         use_adapter: bool = True,
         return_multi_scale: bool = False,
+        early_exit_layer: Optional[int] = None,
     ) -> None:
         super().__init__()
 
@@ -172,6 +173,9 @@ class ImageEncoderViTHQ(nn.Module):
         pretrain_img_size = 224
         self.return_multi_scale = bool(return_multi_scale)
         self.ms_out_indices = [2, 5, 8, 11]
+        self.early_exit_layer = int(early_exit_layer) if early_exit_layer is not None else None
+        if self.early_exit_layer is not None and self.early_exit_layer <= 0:
+            self.early_exit_layer = None
 
         self.patch_embed = PatchEmbed(img_size, patch_size, in_chans, patch_embed_dim)
         num_patches = (pretrain_img_size // patch_size) * (pretrain_img_size // patch_size)
@@ -191,6 +195,17 @@ class ImageEncoderViTHQ(nn.Module):
         # Optional radial frequency gate (to be attached from trainer)
         self.radial_gate = None
         self.rgate_strength = 0.5
+        # Optional AFD gate (to be attached from trainer)
+        self.afd_gate = None
+        self.afd_strength = 0.5
+        # Optional MSFE gate (to be attached from trainer)
+        self.msfe_gate = None
+        self.msfe_strength = 0.5
+        # Optional text fusion module to be attached from trainer.
+        self.block_text_fuser = None
+
+    def set_text_block_fuser(self, module: Optional[nn.Module]) -> None:
+        self.block_text_fuser = module
 
     def forward(self, x: torch.Tensor):
         assert x.shape[2] == self.img_size and x.shape[3] == self.img_size, "input image size must match self.img_size"
@@ -204,6 +219,9 @@ class ImageEncoderViTHQ(nn.Module):
 
         interm = None
         multi_scale_feats = []
+        max_blocks = len(self.blocks)
+        if self.early_exit_layer is not None:
+            max_blocks = max(1, min(max_blocks, self.early_exit_layer))
         for i, blk in enumerate(self.blocks):
             x_tok = blk(x_tok)
             if i == 0:  # take very early feature for HQ branch
@@ -212,6 +230,8 @@ class ImageEncoderViTHQ(nn.Module):
             if self.return_multi_scale and i in self.ms_out_indices:
                 x_grid = x_tok.reshape(x.shape[0], num_patches, num_patches, x.shape[3])
                 multi_scale_feats.append(x_grid.permute(0, 3, 1, 2))
+            if (i + 1) >= max_blocks:
+                break
 
         x_grid = x_tok.reshape(x.shape[0], num_patches, num_patches, x.shape[3])
         neck_in = x_grid.permute(0, 3, 1, 2)
@@ -223,6 +243,89 @@ class ImageEncoderViTHQ(nn.Module):
             except Exception:
                 # fall back silently if shapes mismatch
                 pass
+        # apply optional AFD gate on neck output
+        if getattr(self, "afd_gate", None) is not None:
+            try:
+                afd_delta = self.afd_gate(neck_out) - neck_out
+                neck_out = neck_out + float(getattr(self, "afd_strength", 0.5)) * afd_delta
+            except Exception:
+                pass
+        # apply optional MSFE gate on neck output
+        if getattr(self, "msfe_gate", None) is not None:
+            try:
+                msfe_delta = self.msfe_gate(neck_out) - neck_out
+                neck_out = neck_out + float(getattr(self, "msfe_strength", 0.5)) * msfe_delta
+            except Exception:
+                pass
         if self.return_multi_scale:
             return neck_out, interm, multi_scale_feats
         return neck_out, interm
+
+    def forward_with_text(
+        self,
+        x: torch.Tensor,
+        text_tokens: torch.Tensor,
+        text_attention_mask: Optional[torch.Tensor] = None,
+    ):
+        assert x.shape[2] == self.img_size and x.shape[3] == self.img_size, "input image size must match self.img_size"
+        x = self.patch_embed(x)
+        # B C H W -> B H W C tokens
+        x = x.permute(0, 2, 3, 1)
+        x = x + get_abs_pos(self.pos_embed, self.pretrain_use_cls_token, [x.shape[1], x.shape[2]])
+        num_patches = x.shape[1]
+        assert x.shape[2] == num_patches
+        x_tok = x.reshape(x.shape[0], num_patches * num_patches, x.shape[3])
+
+        fuser = getattr(self, "block_text_fuser", None)
+        if fuser is not None and text_tokens is not None and hasattr(fuser, "prepare_text_inputs"):
+            text_tokens, text_attention_mask = fuser.prepare_text_inputs(text_tokens, text_attention_mask)
+
+        interm = None
+        multi_scale_feats = []
+        max_blocks = len(self.blocks)
+        if self.early_exit_layer is not None:
+            max_blocks = max(1, min(max_blocks, self.early_exit_layer))
+        for i, blk in enumerate(self.blocks):
+            x_tok = blk(x_tok)
+            if fuser is not None and text_tokens is not None and hasattr(fuser, "forward_layer"):
+                x_tok, text_tokens, text_attention_mask = fuser.forward_layer(
+                    x_tok,
+                    text_tokens,
+                    attention_mask=text_attention_mask,
+                    layer_idx=i,
+                )
+            if i == 0:  # take very early feature for HQ branch
+                x_grid = x_tok.reshape(x.shape[0], num_patches, num_patches, x.shape[3])
+                interm = x_grid  # [B, H', W', C]
+            if self.return_multi_scale and i in self.ms_out_indices:
+                x_grid = x_tok.reshape(x.shape[0], num_patches, num_patches, x.shape[3])
+                multi_scale_feats.append(x_grid.permute(0, 3, 1, 2))
+            if (i + 1) >= max_blocks:
+                break
+
+        x_grid = x_tok.reshape(x.shape[0], num_patches, num_patches, x.shape[3])
+        neck_in = x_grid.permute(0, 3, 1, 2)
+        neck_out = self.neck(neck_in)
+        # apply optional frequency gate on neck output
+        if getattr(self, "radial_gate", None) is not None:
+            try:
+                neck_out = neck_out + float(getattr(self, "rgate_strength", 0.5)) * self.radial_gate(neck_out)
+            except Exception:
+                pass
+        # apply optional AFD gate on neck output
+        if getattr(self, "afd_gate", None) is not None:
+            try:
+                afd_delta = self.afd_gate(neck_out) - neck_out
+                neck_out = neck_out + float(getattr(self, "afd_strength", 0.5)) * afd_delta
+            except Exception:
+                pass
+        # apply optional MSFE gate on neck output
+        if getattr(self, "msfe_gate", None) is not None:
+            try:
+                msfe_delta = self.msfe_gate(neck_out) - neck_out
+                neck_out = neck_out + float(getattr(self, "msfe_strength", 0.5)) * msfe_delta
+            except Exception:
+                pass
+        if self.return_multi_scale:
+            return neck_out, interm, multi_scale_feats, text_tokens, text_attention_mask
+        return neck_out, interm, text_tokens, text_attention_mask

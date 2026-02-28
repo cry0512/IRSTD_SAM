@@ -1,0 +1,3 @@
+Run directory: ./outputs_sam_sirst_hq\NUDT_HQ_radial_mllm_20260224_172104
+Using SCTransNet-style preprocessing (grayscale, random crop, dataset normalization)
+MLLM TextConditioner enabled: text_dim=512, params=262656

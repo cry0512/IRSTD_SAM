@@ -1,0 +1,52 @@
+Run directory: ./outputs_sam_sirst_hq\NUDT-SIRST_model-vitt_size256_HQ_TextMaskAware_SelfPrompt_SCPreproc_bs4_e1000_kp1_split-50_50_20260221_001901_20260221_001903
+Initialized Self-Prompting Head (pos_k=3, neg_k=2, heatmap_w=1.0, gt_ratio=0.3, params=184,641)
+Initialized Text-Guided Prompting (n_ctx=4, dim=512, clip=ViT-B/32, prompt_params=1,580,032, cond_params=66,112)
+Text classes enabled: 0=no-target, 1=single-target, 2=multi-target (min_area=2)
+Initialized Text Alignment Head (proj_dim=256, temp_init=0.07, params=197,121, weight=0.1)
+[Epoch 001] loss=1.8589 miou=0.0368 niou=0.0368 f1=0.0644 pd=0.3672 fa=0.000227 thr=0.40 time=43.9s
+[Epoch 002] loss=1.0373 miou=0.3342 niou=0.3342 f1=0.4433 pd=0.8899 fa=0.002139 thr=0.44 time=42.4s
+[Epoch 003] loss=0.8356 miou=0.3782 niou=0.3782 f1=0.4891 pd=0.8921 fa=0.002099 thr=0.45 time=42.4s
+[Epoch 004] loss=0.8077 miou=0.3890 niou=0.3890 f1=0.4997 pd=0.8847 fa=0.001654 thr=0.45 time=42.5s
+[Epoch 005] loss=0.7673 miou=0.3811 niou=0.3811 f1=0.4965 pd=0.8847 fa=0.000875 thr=0.43 time=42.1s
+[Epoch 006] loss=0.7572 miou=0.4105 niou=0.4105 f1=0.5228 pd=0.9439 fa=0.002384 thr=0.49 time=42.1s
+[Epoch 007] loss=0.7196 miou=0.4357 niou=0.4357 f1=0.5496 pd=0.9058 fa=0.001179 thr=0.45 time=42.0s
+[Epoch 008] loss=0.7146 miou=0.4379 niou=0.4379 f1=0.5549 pd=0.9249 fa=0.001311 thr=0.45 time=42.0s
+[Epoch 009] loss=0.7140 miou=0.4439 niou=0.4439 f1=0.5625 pd=0.9122 fa=0.000934 thr=0.45 time=46.8s
+[Epoch 010] loss=0.6965 miou=0.4534 niou=0.4534 f1=0.5703 pd=0.9048 fa=0.000654 thr=0.44 time=43.0s
+[Epoch 011] loss=0.6675 miou=0.4671 niou=0.4671 f1=0.5856 pd=0.9048 fa=0.000595 thr=0.44 time=42.0s
+[Epoch 012] loss=0.6720 miou=0.4678 niou=0.4678 f1=0.5869 pd=0.9005 fa=0.000454 thr=0.43 time=42.2s
+[Epoch 013] loss=0.6399 miou=0.4763 niou=0.4763 f1=0.5948 pd=0.9069 fa=0.000514 thr=0.43 time=42.5s
+[Epoch 014] loss=0.6366 miou=0.4733 niou=0.4733 f1=0.5942 pd=0.9397 fa=0.000830 thr=0.46 time=49.3s
+[Epoch 015] loss=0.6347 miou=0.4790 niou=0.4790 f1=0.6019 pd=0.9280 fa=0.000658 thr=0.45 time=49.4s
+[Epoch 016] loss=0.6282 miou=0.4958 niou=0.4958 f1=0.6148 pd=0.9217 fa=0.000560 thr=0.45 time=48.8s
+[Epoch 017] loss=0.6237 miou=0.5033 niou=0.5033 f1=0.6211 pd=0.9386 fa=0.000680 thr=0.46 time=45.1s
+[Epoch 018] loss=0.6031 miou=0.5081 niou=0.5081 f1=0.6268 pd=0.9407 fa=0.000629 thr=0.45 time=47.1s
+[Epoch 019] loss=0.6002 miou=0.5203 niou=0.5203 f1=0.6374 pd=0.9090 fa=0.000432 thr=0.43 time=49.2s
+[Epoch 020] loss=0.5964 miou=0.5087 niou=0.5087 f1=0.6287 pd=0.9196 fa=0.000443 thr=0.45 time=47.9s
+[Epoch 021] loss=0.5798 miou=0.5250 niou=0.5250 f1=0.6436 pd=0.9238 fa=0.000400 thr=0.44 time=42.8s
+[Epoch 022] loss=0.5715 miou=0.5030 niou=0.5030 f1=0.6227 pd=0.9481 fa=0.000656 thr=0.46 time=44.3s
+[Epoch 023] loss=0.5712 miou=0.5249 niou=0.5249 f1=0.6415 pd=0.9196 fa=0.000424 thr=0.43 time=46.5s
+[Epoch 024] loss=0.5785 miou=0.5183 niou=0.5183 f1=0.6397 pd=0.9418 fa=0.000414 thr=0.45 time=49.3s
+[Epoch 025] loss=0.5739 miou=0.4991 niou=0.4991 f1=0.6125 pd=0.8624 fa=0.000167 thr=0.40 time=49.3s
+[Epoch 026] loss=0.5654 miou=0.5242 niou=0.5242 f1=0.6444 pd=0.9471 fa=0.000515 thr=0.46 time=49.6s
+[Epoch 027] loss=0.5546 miou=0.5052 niou=0.5052 f1=0.6275 pd=0.9524 fa=0.000608 thr=0.46 time=45.7s
+[Epoch 028] loss=0.5567 miou=0.5435 niou=0.5435 f1=0.6619 pd=0.9249 fa=0.000305 thr=0.43 time=42.3s
+[Epoch 029] loss=0.5405 miou=0.5437 niou=0.5437 f1=0.6616 pd=0.9344 fa=0.000295 thr=0.43 time=42.9s
+[Epoch 030] loss=0.5406 miou=0.5317 niou=0.5317 f1=0.6506 pd=0.9429 fa=0.000488 thr=0.45 time=41.5s
+[Epoch 031] loss=0.5418 miou=0.5405 niou=0.5405 f1=0.6591 pd=0.9397 fa=0.000385 thr=0.44 time=41.3s
+[Epoch 032] loss=0.5398 miou=0.5530 niou=0.5530 f1=0.6703 pd=0.9354 fa=0.000337 thr=0.44 time=41.3s
+[Epoch 033] loss=0.5359 miou=0.5486 niou=0.5486 f1=0.6660 pd=0.9376 fa=0.000319 thr=0.43 time=41.8s
+[Epoch 034] loss=0.5360 miou=0.5399 niou=0.5399 f1=0.6562 pd=0.9122 fa=0.000181 thr=0.41 time=41.8s
+[Epoch 035] loss=0.5421 miou=0.5461 niou=0.5461 f1=0.6638 pd=0.9312 fa=0.000249 thr=0.43 time=41.5s
+[Epoch 036] loss=0.5275 miou=0.5404 niou=0.5404 f1=0.6605 pd=0.9503 fa=0.000442 thr=0.45 time=41.6s
+[Epoch 037] loss=0.5338 miou=0.5557 niou=0.5557 f1=0.6765 pd=0.9471 fa=0.000333 thr=0.45 time=41.4s
+[Epoch 038] loss=0.5383 miou=0.5622 niou=0.5622 f1=0.6803 pd=0.9280 fa=0.000252 thr=0.43 time=41.6s
+[Epoch 039] loss=0.5126 miou=0.5496 niou=0.5496 f1=0.6694 pd=0.9492 fa=0.000346 thr=0.45 time=44.7s
+[Epoch 040] loss=0.5081 miou=0.5438 niou=0.5438 f1=0.6637 pd=0.9079 fa=0.000191 thr=0.42 time=45.0s
+[Epoch 041] loss=0.5163 miou=0.5335 niou=0.5335 f1=0.6568 pd=0.9556 fa=0.000422 thr=0.46 time=45.0s
+[Epoch 042] loss=0.5129 miou=0.5629 niou=0.5629 f1=0.6825 pd=0.9513 fa=0.000317 thr=0.44 time=44.5s
+[Epoch 043] loss=0.5102 miou=0.5432 niou=0.5432 f1=0.6634 pd=0.9429 fa=0.000328 thr=0.44 time=44.8s
+[Epoch 044] loss=0.4905 miou=0.5660 niou=0.5660 f1=0.6831 pd=0.9185 fa=0.000212 thr=0.42 time=44.3s
+[Epoch 045] loss=0.4972 miou=0.5447 niou=0.5447 f1=0.6675 pd=0.9238 fa=0.000207 thr=0.42 time=44.2s
+[Epoch 046] loss=0.4925 miou=0.5644 niou=0.5644 f1=0.6831 pd=0.9386 fa=0.000297 thr=0.43 time=44.5s
+[Epoch 047] loss=0.4889 miou=0.5691 niou=0.5691 f1=0.6860 pd=0.9386 fa=0.000263 thr=0.44 time=47.2s

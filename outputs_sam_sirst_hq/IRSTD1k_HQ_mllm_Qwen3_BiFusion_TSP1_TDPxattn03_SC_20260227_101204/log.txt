@@ -1,0 +1,5 @@
+Run directory: ./outputs_sam_sirst_hq\IRSTD1k_HQ_mllm_Qwen3_BiFusion_TSP1_TDPxattn03_SC_20260227_101204
+MLLM TextConditioner enabled: text_dim=512, params=262656
+Text sparse prompt enabled: tokens=1, params=262912
+Text dense mask prompt enabled: type=token_xattn, hidden=128, heads=4, alpha=0.3, params=525697
+BiFusion adapter enabled: interms+img levels, hidden=128, heads=4, params=511296

@@ -1,0 +1,7 @@
+Run directory: ./outputs_sam_sirst_hq\NUAA_HQ_mllm_Qwen3_tokenCLIP_TSP1_TDPxattn03_SC_20260226_100012
+MLLM TextConditioner enabled: text_dim=512, params=262656
+Text sparse prompt enabled: tokens=1, params=262912
+Text dense mask prompt enabled: type=token_xattn, hidden=128, heads=4, alpha=0.3, params=525697
+[Epoch 001] loss=1.2726 miou=0.0030 niou=0.0305 f1=0.0061 pd=0.0277 fa=0.000005 thr=0.40 time=27.2s
+[Epoch 002] loss=0.9072 miou=0.2038 niou=0.3890 f1=0.3386 pd=0.8211 fa=0.000718 thr=0.46 time=28.5s
+[Epoch 003] loss=0.6958 miou=0.2722 niou=0.4741 f1=0.4279 pd=0.9360 fa=0.000714 thr=0.47 time=28.4s

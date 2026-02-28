@@ -1,4 +1,5 @@
 import math
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -297,6 +298,60 @@ class PhasePromptGenerator(nn.Module):
             k_size += 1
         return TF.gaussian_blur(x, kernel_size=[k_size, k_size], sigma=[self.sigma, self.sigma])
 
+    def _normalize_map01(self, x: torch.Tensor) -> torch.Tensor:
+        bsz = x.shape[0]
+        flat = x.view(bsz, -1)
+        minv = flat.min(dim=1, keepdim=True).values.view(bsz, 1, 1, 1)
+        maxv = flat.max(dim=1, keepdim=True).values.view(bsz, 1, 1, 1)
+        return (x - minv) / (maxv - minv + 1e-6)
+
+    def fuse_saliency_with_text(
+        self,
+        saliency_map: torch.Tensor,
+        text_prior: Optional[torch.Tensor],
+        text_fuse_weight: float = 0.5,
+        text_fuse_mode: str = "mul",
+    ) -> torch.Tensor:
+        """Fuse text prior into PGAP saliency before point extraction.
+
+        Args:
+            saliency_map: [B,1,H,W] PGAP saliency map.
+            text_prior: [B,1,h,w] or [B,h,w] text prior map (e.g., dense text prompt).
+            text_fuse_weight: fusion strength (>=0).
+            text_fuse_mode:
+                - "mul": sal * (1 + a * text)
+                - "add": (1-a) * sal + a * text (a is clamped to [0,1])
+        """
+        if text_prior is None:
+            return saliency_map
+        if text_prior.dim() == 3:
+            text_prior = text_prior.unsqueeze(1)
+        if text_prior.dim() != 4:
+            raise ValueError("text_prior must have shape [B,H,W] or [B,1,H,W]")
+        if text_prior.shape[0] != saliency_map.shape[0]:
+            raise ValueError("text_prior batch size must match saliency_map batch size")
+
+        t = text_prior.to(device=saliency_map.device, dtype=saliency_map.dtype)
+        if tuple(t.shape[-2:]) != tuple(saliency_map.shape[-2:]):
+            t = F.interpolate(
+                t,
+                size=tuple(saliency_map.shape[-2:]),
+                mode="bilinear",
+                align_corners=False,
+            )
+
+        s = self._normalize_map01(saliency_map)
+        t = self._normalize_map01(t)
+        a = max(0.0, float(text_fuse_weight))
+        mode = str(text_fuse_mode).lower()
+        if mode == "add":
+            a01 = max(0.0, min(1.0, a))
+            fused = (1.0 - a01) * s + a01 * t
+        else:
+            # Multiplicative boosting keeps PGAP as the base and lets text act as a soft enhancer.
+            fused = s * (1.0 + a * t)
+        return self._normalize_map01(fused)
+
     def extract_points(self, saliency_map: torch.Tensor):
         bsz, _, h, w = saliency_map.shape
         device = saliency_map.device
@@ -372,8 +427,21 @@ class PhasePromptGenerator(nn.Module):
             point_labels = torch.stack(point_labels_batch, 0)
         return point_coords, point_labels
 
-    def forward(self, images: torch.Tensor):
+    def forward(
+        self,
+        images: torch.Tensor,
+        text_prior: Optional[torch.Tensor] = None,
+        text_fuse_weight: float = 0.5,
+        text_fuse_mode: str = "mul",
+    ):
         saliency_map = self.get_phase_saliency(images)
+        if text_prior is not None:
+            saliency_map = self.fuse_saliency_with_text(
+                saliency_map,
+                text_prior=text_prior,
+                text_fuse_weight=text_fuse_weight,
+                text_fuse_mode=text_fuse_mode,
+            )
         point_coords, point_labels = self.extract_points(saliency_map)
         return point_coords, point_labels, saliency_map
 

@@ -130,6 +130,49 @@ class EfficientSamHQ(nn.Module):
             interm = enhanced.permute(0, 2, 3, 1)
         return neck_out, interm
 
+    def get_image_embeddings_with_text(
+        self,
+        batched_images: torch.Tensor,
+        text_tokens: torch.Tensor,
+        text_attention_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        batched_images = self.preprocess(batched_images)
+        if not hasattr(self.image_encoder, "forward_with_text"):
+            out = self.image_encoder(batched_images)
+            if isinstance(out, (tuple, list)) and len(out) == 3:
+                neck_out, interm, ms_feats = out
+            else:
+                neck_out, interm = out
+                ms_feats = []
+            if self.use_ms_fusion and ms_feats:
+                fused = self.ms_aggregator(ms_feats)
+                if fused is not None:
+                    neck_out = neck_out + fused
+            if self.use_detail_enhancer and interm is not None:
+                interm_c = interm.permute(0, 3, 1, 2)
+                enhanced = self.detail_enhancer(interm_c)
+                interm = enhanced.permute(0, 2, 3, 1)
+            return neck_out, interm, text_tokens, text_attention_mask
+        out = self.image_encoder.forward_with_text(
+            batched_images,
+            text_tokens,
+            text_attention_mask=text_attention_mask,
+        )
+        if isinstance(out, (tuple, list)) and len(out) == 5:
+            neck_out, interm, ms_feats, text_tokens_out, text_mask_out = out
+        else:
+            neck_out, interm, text_tokens_out, text_mask_out = out
+            ms_feats = []
+        if self.use_ms_fusion and ms_feats:
+            fused = self.ms_aggregator(ms_feats)
+            if fused is not None:
+                neck_out = neck_out + fused
+        if self.use_detail_enhancer and interm is not None:
+            interm_c = interm.permute(0, 3, 1, 2)
+            enhanced = self.detail_enhancer(interm_c)
+            interm = enhanced.permute(0, 2, 3, 1)
+        return neck_out, interm, text_tokens_out, text_mask_out
+
     def apply_saliency_modulation(self, image_embeddings: torch.Tensor, saliency_map: torch.Tensor) -> torch.Tensor:
         if saliency_map is None:
             return image_embeddings
@@ -153,6 +196,7 @@ class EfficientSamHQ(nn.Module):
         output_w: int = -1,
         hq_token_only: bool = False,
         batched_masks: Optional[torch.Tensor] = None,
+        text_sparse_embeddings: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         batch_size, max_num_queries, num_pts, _ = batched_points.shape
         rescaled_batched_points = self.get_rescaled_pts(batched_points, input_h, input_w)
@@ -163,6 +207,13 @@ class EfficientSamHQ(nn.Module):
                 batched_masks = batched_masks.repeat_interleave(max_num_queries, dim=0)
             elif batched_masks.shape[0] != batch_size * max_num_queries:
                 raise ValueError("batched_masks must have batch size B or B*Q to match prompts.")
+        if text_sparse_embeddings is not None:
+            if text_sparse_embeddings.dim() != 3:
+                raise ValueError("text_sparse_embeddings must have shape [B, T, C] or [B*Q, T, C].")
+            if text_sparse_embeddings.shape[0] == batch_size:
+                text_sparse_embeddings = text_sparse_embeddings.repeat_interleave(max_num_queries, dim=0)
+            elif text_sparse_embeddings.shape[0] != batch_size * max_num_queries:
+                raise ValueError("text_sparse_embeddings must have batch size B or B*Q to match prompts.")
 
         sparse_embeddings, dense_embeddings = self.prompt_encoder(
             points=(
@@ -175,6 +226,7 @@ class EfficientSamHQ(nn.Module):
             ),
             boxes=None,
             masks=batched_masks,
+            text_embeds=text_sparse_embeddings,
         )  # sparse: [B*Q, N, C], dense: [B*Q, C, H, W]
         # Repeat along queries
         image_embeddings = image_embeddings.repeat_interleave(max_num_queries, dim=0)
@@ -252,6 +304,7 @@ def build_efficient_sam_hq(
     use_adapter: bool = True,
     use_ms_fusion: bool = False,
     use_detail_enhancer: bool = False,
+    early_exit_layer: Optional[int] = None,
 ):
     img_size = 1024
     encoder_patch_size = 16
@@ -273,6 +326,7 @@ def build_efficient_sam_hq(
         act_layer=nn.GELU,
         use_adapter=use_adapter,
         return_multi_scale=use_ms_fusion,
+        early_exit_layer=early_exit_layer,
     )
 
     image_embedding_size = image_encoder.image_embedding_size

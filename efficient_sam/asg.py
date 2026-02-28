@@ -100,10 +100,14 @@ class AnisotropicSpectralGating(nn.Module):
         """
         B, C, H, W = x.shape
         
+        # 保存原始 dtype 并转换为 float32 以避免 ComplexHalf NaN 问题
+        orig_dtype = x.dtype
+        x_fp32 = x.float() if x.dtype == torch.float16 else x
+        
         # 1. 快速傅里叶变换 (RFFT2)
         # 输出形状: (B, C, H, W//2 + 1)
         # 使用 ortho 范数以保持能量守恒
-        x_fft = torch.fft.rfft2(x, norm='ortho')
+        x_fft = torch.fft.rfft2(x_fp32, norm='ortho')
         
         # 2. 生成频域掩膜 (Generate Spectral Mask)
         # 利用 grid_sample 从极坐标参数中采样出当前分辨率下的笛卡尔掩膜
@@ -212,9 +216,13 @@ class AnisotropicSpectralGating2(nn.Module):
     def forward(self, x):
         B, C, H, W = x.shape
         
+        # 保存原始 dtype 并转换为 float32 以避免 ComplexHalf NaN 问题
+        orig_dtype = x.dtype
+        x_fp32 = x.float() if x.dtype == torch.float16 else x
+        
         # --- 1. FFT 变换 ---
         # 转换到频域, shape: (B, C, H, W//2+1)
-        x_fft = torch.fft.rfft2(x, norm='ortho')
+        x_fft = torch.fft.rfft2(x_fp32, norm='ortho')
         
         # --- 2. 动态生成各向异性掩膜 ---
         # 如果输入尺寸变了 (如多尺度训练)，需要重新计算 grid
@@ -244,4 +252,7 @@ class AnisotropicSpectralGating2(nn.Module):
         x_out = torch.fft.irfft2(x_fft_gated, s=(H, W), norm='ortho')
         
         # 残差连接 (这是关键，保留原始信息，学习增强部分)
+        # 恢复原始数据类型
+        if orig_dtype == torch.float16:
+            x_out = x_out.half()
         return x + x_out
