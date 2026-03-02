@@ -10,11 +10,24 @@ Usage:
     img_emb = conditioner(img_emb, text_feat)       # [B, C, h, w]
 """
 
+from contextlib import nullcontext
 from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+def _autocast_disabled_ctx(device_type: str):
+    try:
+        return torch.autocast(device_type=device_type, enabled=False)
+    except Exception:
+        if device_type == "cuda" and torch.cuda.is_available():
+            try:
+                return torch.cuda.amp.autocast(enabled=False)
+            except Exception:
+                return nullcontext()
+        return nullcontext()
 
 
 class TextConditioner(nn.Module):
@@ -85,20 +98,31 @@ class TextSparsePromptProjector(nn.Module):
         embed_dim: int = 256,
         num_tokens: int = 1,
         init_scale: float = 0.02,
+        use_raw_global_gate: bool = False,
+        raw_global_gate_init_bias: float = -2.0,
     ) -> None:
         super().__init__()
         self.text_dim = int(text_dim)
         self.embed_dim = int(embed_dim)
         self.num_tokens = int(num_tokens)
+        self.use_raw_global_gate = bool(use_raw_global_gate)
         self.base_tokens = nn.Parameter(
             torch.randn(1, self.num_tokens, self.embed_dim) * float(init_scale)
         )
+        self.raw_global_norm = nn.LayerNorm(self.text_dim)
         self.delta_proj = nn.Linear(self.text_dim, self.num_tokens * self.embed_dim)
         self.token_delta_proj = nn.Linear(self.text_dim, self.embed_dim)
+        self.raw_global_gate = (
+            nn.Linear(self.text_dim, self.num_tokens)
+            if self.use_raw_global_gate else None
+        )
         nn.init.zeros_(self.delta_proj.weight)
         nn.init.zeros_(self.delta_proj.bias)
         nn.init.zeros_(self.token_delta_proj.weight)
         nn.init.zeros_(self.token_delta_proj.bias)
+        if self.raw_global_gate is not None:
+            nn.init.zeros_(self.raw_global_gate.weight)
+            nn.init.constant_(self.raw_global_gate.bias, float(raw_global_gate_init_bias))
 
     def _masked_mean(self, seq_feat: torch.Tensor, attention_mask: Optional[torch.Tensor]) -> torch.Tensor:
         if attention_mask is None:
@@ -110,10 +134,15 @@ class TextSparsePromptProjector(nn.Module):
         denom = mask.sum(dim=1).clamp(min=1.0)
         return (seq_feat * mask).sum(dim=1) / denom
 
+    def _prepare_raw_global(self, text_feat: torch.Tensor) -> torch.Tensor:
+        text_feat = F.normalize(text_feat, dim=-1)
+        return self.raw_global_norm(text_feat)
+
     def forward(
         self,
         text_feat: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
+        use_global_prompt_enhance: bool = False,
     ) -> torch.Tensor:
         if text_feat.dim() not in (2, 3):
             raise ValueError("text_feat must have shape [B,D] or [B,L,D]")
@@ -122,7 +151,11 @@ class TextSparsePromptProjector(nn.Module):
 
         if text_feat.dim() == 2:
             bsz = text_feat.shape[0]
-            delta = self.delta_proj(text_feat).view(bsz, self.num_tokens, self.embed_dim)
+            proj_input = self._prepare_raw_global(text_feat) if use_global_prompt_enhance else text_feat
+            delta = self.delta_proj(proj_input).view(bsz, self.num_tokens, self.embed_dim)
+            if use_global_prompt_enhance and self.raw_global_gate is not None:
+                gate = torch.sigmoid(self.raw_global_gate(proj_input)).unsqueeze(-1)
+                delta = delta * gate
             return self.base_tokens.expand(bsz, -1, -1) + delta
 
         # Token-level input: [B, L, D]
@@ -305,26 +338,29 @@ class TextDenseMaskPromptGeneratorV2(nn.Module):
         output_size: Optional[Tuple[int, int]] = None,
     ) -> torch.Tensor:
         text_feat, attention_mask = self._prepare_text_inputs(text_feat, attention_mask)
-        text_feat = text_feat.to(self.text_k_proj.weight.dtype)
-
-        q_map = self.img_q_proj(img_feat)  # [B, Hc, H, W]
-        bsz, hc, h, w = q_map.shape
-        q = q_map.flatten(2).transpose(1, 2)  # [B, HW, Hc]
-        k = self.text_k_proj(text_feat)        # [B, L, Hc]
-        v = self.text_v_proj(text_feat)        # [B, L, Hc]
-
+        device_type = img_feat.device.type
         key_padding_mask = None if attention_mask is None else (~attention_mask)
-        attn_out, _ = self.cross_attn(
-            query=q,
-            key=k,
-            value=v,
-            key_padding_mask=key_padding_mask,
-            need_weights=False,
-        )  # [B, HW, Hc]
-        attn_map = attn_out.transpose(1, 2).reshape(bsz, hc, h, w)
+        with _autocast_disabled_ctx(device_type):
+            img_feat_fp32 = img_feat.float()
+            text_feat_fp32 = text_feat.float()
 
-        logits = self.fuse(torch.cat([q_map, attn_map], dim=1))
-        dense = torch.sigmoid(logits)
+            q_map = self.img_q_proj(img_feat_fp32)  # [B, Hc, H, W]
+            bsz, hc, h, w = q_map.shape
+            q = q_map.flatten(2).transpose(1, 2)  # [B, HW, Hc]
+            k = self.text_k_proj(text_feat_fp32)  # [B, L, Hc]
+            v = self.text_v_proj(text_feat_fp32)  # [B, L, Hc]
+
+            attn_out, _ = self.cross_attn(
+                query=q,
+                key=k,
+                value=v,
+                key_padding_mask=key_padding_mask,
+                need_weights=False,
+            )  # [B, HW, Hc]
+            attn_map = attn_out.transpose(1, 2).reshape(bsz, hc, h, w)
+
+            logits = self.fuse(torch.cat([q_map, attn_map], dim=1))
+            dense = torch.sigmoid(logits)
         if output_size is not None and tuple(dense.shape[-2:]) != tuple(output_size):
             dense = F.interpolate(dense, size=output_size, mode="bilinear", align_corners=False)
         return dense
@@ -335,12 +371,16 @@ def build_text_sparse_prompt_projector(
     embed_dim: int = 256,
     num_tokens: int = 1,
     init_scale: float = 0.02,
+    use_raw_global_gate: bool = False,
+    raw_global_gate_init_bias: float = -2.0,
 ) -> TextSparsePromptProjector:
     return TextSparsePromptProjector(
         text_dim=text_dim,
         embed_dim=embed_dim,
         num_tokens=num_tokens,
         init_scale=init_scale,
+        use_raw_global_gate=use_raw_global_gate,
+        raw_global_gate_init_bias=raw_global_gate_init_bias,
     )
 
 
@@ -715,6 +755,17 @@ class BackboneBiFusionBlockAdapter(nn.Module):
                 text_feat[bad] = 0
         return text_feat, attention_mask
 
+    def _masked_mean(
+        self,
+        seq_feat: torch.Tensor,
+        attention_mask: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        if attention_mask is None:
+            return seq_feat.mean(dim=1)
+        mask = (attention_mask > 0).to(seq_feat.dtype).unsqueeze(-1)
+        denom = mask.sum(dim=1).clamp(min=1.0)
+        return (seq_feat * mask).sum(dim=1) / denom
+
     def forward_layer(
         self,
         vision_tokens: torch.Tensor,
@@ -733,30 +784,34 @@ class BackboneBiFusionBlockAdapter(nn.Module):
         orig_v = vision_tokens
         orig_t = text_tokens
 
-        v = vision_tokens.to(self.vision_in_proj.weight.dtype)
-        t = text_tokens.to(self.text_in_proj.weight.dtype)
-        v_h = self.vision_in_proj(v)  # [B,N,H]
-        t_h = self.text_in_proj(t)    # [B,L,H]
         key_padding_mask = None if attention_mask is None else (~attention_mask)
+        with _autocast_disabled_ctx(vision_tokens.device.type):
+            v = vision_tokens.float()
+            t = text_tokens.float()
+            v_h = self.vision_in_proj(v)  # [B,N,H]
+            t_h = self.text_in_proj(t)    # [B,L,H]
 
-        v_delta, _ = self.v_from_t[idx](
-            query=v_h,
-            key=t_h,
-            value=t_h,
-            key_padding_mask=key_padding_mask,
-            need_weights=False,
-        )
-        v_h_upd = v_h + v_delta
-        t_delta, _ = self.t_from_v[idx](
-            query=t_h,
-            key=v_h_upd,
-            value=v_h_upd,
-            need_weights=False,
-        )
-        t_h_upd = t_h + t_delta
+            v_delta, _ = self.v_from_t[idx](
+                query=v_h,
+                key=t_h,
+                value=t_h,
+                key_padding_mask=key_padding_mask,
+                need_weights=False,
+            )
+            v_h_upd = v_h + v_delta
+            t_delta, _ = self.t_from_v[idx](
+                query=t_h,
+                key=v_h_upd,
+                value=v_h_upd,
+                need_weights=False,
+            )
+            t_h_upd = t_h + t_delta
 
-        v_out = orig_v + self.vision_res_scale * self.vision_out_proj(v_h_upd).to(orig_v.dtype)
-        t_out = orig_t + self.text_res_scale * self.text_out_proj(t_h_upd).to(orig_t.dtype)
+            v_delta_out = self.vision_out_proj(v_h_upd)
+            t_delta_out = self.text_out_proj(t_h_upd)
+
+        v_out = orig_v + self.vision_res_scale * v_delta_out.to(orig_v.dtype)
+        t_out = orig_t + self.text_res_scale * t_delta_out.to(orig_t.dtype)
         if attention_mask is not None:
             valid = attention_mask.unsqueeze(-1).to(t_out.dtype)
             t_out = t_out * valid + orig_t * (1.0 - valid)
@@ -782,4 +837,165 @@ def build_backbone_bifusion_block_adapter(
         apply_every=apply_every,
         vision_res_scale=vision_res_scale,
         text_res_scale=text_res_scale,
+    )
+
+
+class GatedBackboneBiFusionBlockAdapter(BackboneBiFusionBlockAdapter):
+    """Backbone BiFusion with lightweight gates on bidirectional updates.
+
+    Compared with the plain backbone BiFusion, this variant keeps the same
+    bidirectional cross-attention path but learns a small gate before adding
+    text-driven / vision-driven updates. This makes text injection softer and
+    more robust when descriptions are noisy.
+    """
+
+    def __init__(
+        self,
+        num_layers: int,
+        vision_dim: int = 192,
+        text_dim: int = 512,
+        hidden_dim: int = 128,
+        num_heads: int = 4,
+        apply_every: int = 1,
+        vision_res_scale: float = 1.0,
+        text_res_scale: float = 1.0,
+        gate_hidden_dim: int = 0,
+        gate_init_bias: float = -2.0,
+    ) -> None:
+        super().__init__(
+            num_layers=num_layers,
+            vision_dim=vision_dim,
+            text_dim=text_dim,
+            hidden_dim=hidden_dim,
+            num_heads=num_heads,
+            apply_every=apply_every,
+            vision_res_scale=vision_res_scale,
+            text_res_scale=text_res_scale,
+        )
+        self.gate_hidden_dim = max(16, int(gate_hidden_dim) if int(gate_hidden_dim) > 0 else self.hidden_dim // 4)
+        self.gate_init_bias = float(gate_init_bias)
+
+        self.vision_gates = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(self.hidden_dim * 3, self.gate_hidden_dim),
+                nn.GELU(),
+                nn.Linear(self.gate_hidden_dim, self.hidden_dim),
+            )
+            for _ in range(self.num_layers)
+        ])
+        self.text_gates = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(self.hidden_dim * 3, self.gate_hidden_dim),
+                nn.GELU(),
+                nn.Linear(self.gate_hidden_dim, self.hidden_dim),
+            )
+            for _ in range(self.num_layers)
+        ])
+        self._init_gate_weights()
+
+    def _init_gate_weights(self) -> None:
+        for gate_stack in list(self.vision_gates) + list(self.text_gates):
+            first = gate_stack[0]
+            last = gate_stack[-1]
+            if isinstance(first, nn.Linear):
+                nn.init.xavier_uniform_(first.weight)
+                nn.init.zeros_(first.bias)
+            if isinstance(last, nn.Linear):
+                nn.init.zeros_(last.weight)
+                nn.init.constant_(last.bias, self.gate_init_bias)
+
+    def forward_layer(
+        self,
+        vision_tokens: torch.Tensor,
+        text_tokens: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        layer_idx: int = 0,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        if vision_tokens.dim() != 3:
+            raise ValueError("vision_tokens must have shape [B,N,C]")
+        if text_tokens.dim() != 3:
+            raise ValueError("text_tokens must have shape [B,L,C]")
+        if (layer_idx + 1) % self.apply_every != 0:
+            return vision_tokens, text_tokens, attention_mask
+
+        idx = max(0, min(int(layer_idx), self.num_layers - 1))
+        orig_v = vision_tokens
+        orig_t = text_tokens
+
+        key_padding_mask = None if attention_mask is None else (~attention_mask)
+        with _autocast_disabled_ctx(vision_tokens.device.type):
+            v = vision_tokens.float()
+            t = text_tokens.float()
+            v_h = self.vision_in_proj(v)  # [B,N,H]
+            t_h = self.text_in_proj(t)    # [B,L,H]
+
+            v_delta, _ = self.v_from_t[idx](
+                query=v_h,
+                key=t_h,
+                value=t_h,
+                key_padding_mask=key_padding_mask,
+                need_weights=False,
+            )
+            v_gate_in = torch.cat(
+                [
+                    v_h.mean(dim=1),
+                    self._masked_mean(t_h, attention_mask),
+                    v_delta.mean(dim=1),
+                ],
+                dim=-1,
+            )
+            v_gate = torch.sigmoid(self.vision_gates[idx](v_gate_in)).unsqueeze(1)
+            v_h_upd = v_h + v_gate * v_delta
+
+            t_delta, _ = self.t_from_v[idx](
+                query=t_h,
+                key=v_h_upd,
+                value=v_h_upd,
+                need_weights=False,
+            )
+            t_gate_in = torch.cat(
+                [
+                    self._masked_mean(t_h, attention_mask),
+                    v_h_upd.mean(dim=1),
+                    self._masked_mean(t_delta, attention_mask),
+                ],
+                dim=-1,
+            )
+            t_gate = torch.sigmoid(self.text_gates[idx](t_gate_in)).unsqueeze(1)
+            t_h_upd = t_h + t_gate * t_delta
+
+            v_delta_out = self.vision_out_proj(v_h_upd)
+            t_delta_out = self.text_out_proj(t_h_upd)
+
+        v_out = orig_v + self.vision_res_scale * v_delta_out.to(orig_v.dtype)
+        t_out = orig_t + self.text_res_scale * t_delta_out.to(orig_t.dtype)
+        if attention_mask is not None:
+            valid = attention_mask.unsqueeze(-1).to(t_out.dtype)
+            t_out = t_out * valid + orig_t * (1.0 - valid)
+        return v_out, t_out, attention_mask
+
+
+def build_gated_backbone_bifusion_block_adapter(
+    num_layers: int,
+    vision_dim: int = 192,
+    text_dim: int = 512,
+    hidden_dim: int = 128,
+    num_heads: int = 4,
+    apply_every: int = 1,
+    vision_res_scale: float = 1.0,
+    text_res_scale: float = 1.0,
+    gate_hidden_dim: int = 0,
+    gate_init_bias: float = -2.0,
+) -> GatedBackboneBiFusionBlockAdapter:
+    return GatedBackboneBiFusionBlockAdapter(
+        num_layers=num_layers,
+        vision_dim=vision_dim,
+        text_dim=text_dim,
+        hidden_dim=hidden_dim,
+        num_heads=num_heads,
+        apply_every=apply_every,
+        vision_res_scale=vision_res_scale,
+        text_res_scale=text_res_scale,
+        gate_hidden_dim=gate_hidden_dim,
+        gate_init_bias=gate_init_bias,
     )

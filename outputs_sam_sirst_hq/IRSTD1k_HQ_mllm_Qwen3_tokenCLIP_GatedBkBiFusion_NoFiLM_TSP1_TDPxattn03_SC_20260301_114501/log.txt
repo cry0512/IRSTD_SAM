@@ -1,0 +1,10 @@
+Run directory: ./outputs_sam_sirst_hq\IRSTD1k_HQ_mllm_Qwen3_tokenCLIP_GatedBkBiFusion_NoFiLM_TSP1_TDPxattn03_SC_20260301_114501
+MLLM TextConditioner disabled by --disable_text_conditioner.
+Text sparse prompt enabled: tokens=1, params=262912
+Text dense mask prompt enabled: type=token_xattn, hidden=128, heads=4, alpha=0.3, params=525697
+Gated Backbone BiFusion enabled: layers=12, hidden=128, heads=4, every=1, gate_hidden=0, gate_bias=-2.0, params=2163392
+[Epoch 001] loss=0.9801 miou=0.4001 niou=0.3971 f1=0.3383 pd=0.8513 fa=0.002117 thr=0.43 time=69.5s
+[Epoch 002] loss=0.6621 miou=0.4445 niou=0.4417 f1=0.3687 pd=0.7805 fa=0.000908 thr=0.43 time=68.4s
+[Epoch 003] loss=0.5862 miou=0.4880 niou=0.4879 f1=0.3924 pd=0.7824 fa=0.000544 thr=0.41 time=66.3s
+[Epoch 004] loss=0.4831 miou=0.5319 niou=0.5313 f1=0.4695 pd=0.9239 fa=0.000531 thr=0.44 time=69.0s
+[Epoch 005] loss=0.5521 miou=0.5676 niou=0.5672 f1=0.4581 pd=0.8557 fa=0.000210 thr=0.41 time=65.5s

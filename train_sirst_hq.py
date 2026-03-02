@@ -56,6 +56,7 @@ from efficient_sam.efficient_sam_hq import build_efficient_sam_hq
 from efficient_sam.text_conditioner import (
     build_backbone_bifusion_block_adapter,
     build_bifusion_adapter_lite,
+    build_gated_backbone_bifusion_block_adapter,
     build_text_conditioner,
     build_text_dense_mask_prompt_generator,
     build_text_dense_mask_prompt_generator_v2,
@@ -409,25 +410,69 @@ def _merge_dense_mask_prompts(base_prompt, text_prompt, alpha: float):
     return (1.0 - a) * base_prompt + a * text_prompt
 
 
+def _select_text_sparse_prompt_source(
+    args,
+    raw_clip_feat,
+    fused_clip_feat,
+    fused_clip_token_feat=None,
+    fused_clip_token_mask=None,
+):
+    source = str(getattr(args, "text_sparse_prompt_source", "fused_tokens"))
+    if source == "raw_global":
+        if raw_clip_feat is not None:
+            return raw_clip_feat, None
+        if fused_clip_feat is not None:
+            return fused_clip_feat, None
+        return None, None
+    if source == "fused_global":
+        if fused_clip_feat is not None:
+            return fused_clip_feat, None
+        if raw_clip_feat is not None:
+            return raw_clip_feat, None
+        return None, None
+    if source == "fused_tokens":
+        if fused_clip_token_feat is not None:
+            return fused_clip_token_feat, fused_clip_token_mask
+        if fused_clip_feat is not None:
+            return fused_clip_feat, None
+        if raw_clip_feat is not None:
+            return raw_clip_feat, None
+        return None, None
+    raise ValueError(f"Unsupported text_sparse_prompt_source: {source}")
+
+
 def _build_text_prompt_inputs(
     model,
     args,
     img_emb,
     clip_feat,
+    raw_clip_feat=None,
     clip_token_feat=None,
     clip_token_mask=None,
     text_sparse_prompt=None,
     text_dense_prompt=None,
 ):
-    if clip_feat is None and clip_token_feat is None:
+    if raw_clip_feat is None and clip_feat is None and clip_token_feat is None:
         return None, None
     sparse_prompt = None
     dense_prompt = None
     if text_sparse_prompt is not None:
-        if clip_token_feat is not None:
-            sparse_prompt = text_sparse_prompt(clip_token_feat, attention_mask=clip_token_mask)
-        elif clip_feat is not None:
-            sparse_prompt = text_sparse_prompt(clip_feat)
+        sparse_source = str(getattr(args, "text_sparse_prompt_source", "fused_tokens"))
+        sparse_input, sparse_mask = _select_text_sparse_prompt_source(
+            args,
+            raw_clip_feat=raw_clip_feat,
+            fused_clip_feat=clip_feat,
+            fused_clip_token_feat=clip_token_feat,
+            fused_clip_token_mask=clip_token_mask,
+        )
+        if sparse_input is not None:
+            if sparse_input.dim() == 3:
+                sparse_prompt = text_sparse_prompt(sparse_input, attention_mask=sparse_mask)
+            else:
+                sparse_prompt = text_sparse_prompt(
+                    sparse_input,
+                    use_global_prompt_enhance=(sparse_source == "raw_global"),
+                )
     if text_dense_prompt is not None:
         target_size = getattr(model.prompt_encoder, "mask_input_size", None)
         if getattr(text_dense_prompt, "expects_token_level", False):
@@ -599,13 +644,15 @@ def train_one_epoch(
     nwd_weight = float(getattr(args, "nwd_weight", 0.0))
     nwd_criterion = NWDLoss(constant=float(getattr(args, "nwd_constant", 12.0))).to(device) if nwd_weight > 0.0 else None
     meter_loss, n = 0.0, 0
-    for batch in loader:
+    skipped_nonfinite = 0
+    for batch_idx, batch in enumerate(loader, start=1):
         images = batch["image"].to(device, non_blocking=True)
         masks = batch["mask"].to(device, non_blocking=True)
         B, H, W = masks.shape
 
         with autocast_ctx(device):
             clip_feat = None
+            raw_clip_feat = None
             clip_token_feat = None
             clip_token_mask = None
             if "clip_text_feat" in batch and (
@@ -616,6 +663,7 @@ def train_one_epoch(
                 or backbone_bifusion_adapter is not None
             ):
                 clip_feat = batch["clip_text_feat"].to(device, non_blocking=True)
+                raw_clip_feat = clip_feat
             if (text_sparse_prompt is not None or bifusion_adapter is not None or backbone_bifusion_adapter is not None) and "clip_text_token_feat" in batch:
                 clip_token_feat = batch["clip_text_token_feat"].to(device, non_blocking=True)
                 if "clip_text_attn_mask" in batch:
@@ -693,6 +741,7 @@ def train_one_epoch(
         else:
             text_sparse_embeds, text_dense_mask = _build_text_prompt_inputs(
                 model, args, img_emb, clip_feat,
+                raw_clip_feat=raw_clip_feat,
                 clip_token_feat=clip_token_feat,
                 clip_token_mask=clip_token_mask,
                 text_sparse_prompt=text_sparse_prompt,
@@ -720,6 +769,14 @@ def train_one_epoch(
             hq_token_only=use_hq_only,
         )
         logits = pred_masks[:, 0, 0, ...].unsqueeze(1)
+        if not torch.isfinite(logits).all():
+            skipped_nonfinite += 1
+            optimizer.zero_grad(set_to_none=True)
+            log_line(
+                f"[warn] Skip non-finite logits at epoch {epoch:03d}, batch {batch_idx}",
+                args.log_file,
+            )
+            continue
         loss = bce(logits, masks.unsqueeze(1)) + dice_loss(logits, masks.unsqueeze(1))
         if nwd_criterion is not None:
             loss = loss + nwd_weight * nwd_criterion(logits, masks.unsqueeze(1))
@@ -753,6 +810,7 @@ def train_one_epoch(
                 pts_perturbed[..., 1] = pts_perturbed[..., 1].clamp(0, H - 1)
             text_sparse_embeds_p, text_dense_mask_p = _build_text_prompt_inputs(
                 model, args, img_emb.detach(), clip_feat,
+                raw_clip_feat=raw_clip_feat,
                 clip_token_feat=clip_token_feat,
                 clip_token_mask=clip_token_mask,
                 text_sparse_prompt=text_sparse_prompt,
@@ -804,6 +862,15 @@ def train_one_epoch(
             dice_pts = dice_pts.mean()
             loss = loss + args.point_loss_weight * (bce_points + dice_pts)
 
+        if not torch.isfinite(loss):
+            skipped_nonfinite += 1
+            optimizer.zero_grad(set_to_none=True)
+            log_line(
+                f"[warn] Skip non-finite loss at epoch {epoch:03d}, batch {batch_idx}",
+                args.log_file,
+            )
+            continue
+
         optimizer.zero_grad(set_to_none=True)
         scaler.scale(loss).backward()
         scaler.step(optimizer)
@@ -811,6 +878,11 @@ def train_one_epoch(
 
         meter_loss += loss.item() * B
         n += B
+    if skipped_nonfinite > 0:
+        log_line(
+            f"[warn] Skipped {skipped_nonfinite} non-finite train batches at epoch {epoch:03d}",
+            args.log_file,
+        )
     return meter_loss / max(n, 1)
 
 
@@ -832,13 +904,10 @@ def validate(
     if pgap is not None:
         pgap.eval()
     pgap_text_prior_only = bool(getattr(args, "pgap_text_prior_only", False))
-    total_inter = 0.0
-    total_union = 0.0
+    # Batch-average protocol: compute mIoU/F1 per batch, then average across batches.
+    ious, f1s = [], []
     niou_sum = 0.0
     niou_count = 0
-    tp = 0.0
-    fp = 0.0
-    fn = 0.0
     thr_sum = 0.0
     thr_count = 0
     pd_fa = PD_FA(distance_thresh=getattr(args, "pd_fa_dist", 3))
@@ -847,6 +916,7 @@ def validate(
         masks = batch["mask"].to(device, non_blocking=True)
         B, H, W = masks.shape
         clip_feat = None
+        raw_clip_feat = None
         clip_token_feat = None
         clip_token_mask = None
         if "clip_text_feat" in batch and (
@@ -857,6 +927,7 @@ def validate(
             or backbone_bifusion_adapter is not None
         ):
             clip_feat = batch["clip_text_feat"].to(device, non_blocking=True)
+            raw_clip_feat = clip_feat
         if (text_sparse_prompt is not None or bifusion_adapter is not None or backbone_bifusion_adapter is not None) and "clip_text_token_feat" in batch:
             clip_token_feat = batch["clip_text_token_feat"].to(device, non_blocking=True)
             if "clip_text_attn_mask" in batch:
@@ -917,6 +988,7 @@ def validate(
                 else:
                     text_sparse_stage1, text_dense_stage1 = _build_text_prompt_inputs(
                         model, args, img_emb, clip_feat,
+                        raw_clip_feat=raw_clip_feat,
                         clip_token_feat=clip_token_feat,
                         clip_token_mask=clip_token_mask,
                         text_sparse_prompt=text_sparse_prompt,
@@ -977,6 +1049,7 @@ def validate(
         else:
             text_sparse_embeds, text_dense_mask = _build_text_prompt_inputs(
                 model, args, img_emb, clip_feat,
+                raw_clip_feat=raw_clip_feat,
                 clip_token_feat=clip_token_feat,
                 clip_token_mask=clip_token_mask,
                 text_sparse_prompt=text_sparse_prompt,
@@ -1015,24 +1088,19 @@ def validate(
         else:
             thr_used = args.thr
 
+        miou, mf1 = compute_metrics(logits, masks.unsqueeze(1), thr=thr_used)
+        ious.append(miou)
+        f1s.append(mf1)
+
         prob = torch.sigmoid(logits)
         pred = (prob >= thr_used).float()
         target = masks.unsqueeze(1).float()
-
-        inter = (pred * target).sum().item()
-        union = (pred + target - pred * target).sum().item()
-        total_inter += inter
-        total_union += union
 
         inter_s = (pred * target).sum(dim=(1, 2, 3))
         union_s = (pred + target - pred * target).sum(dim=(1, 2, 3))
         iou_s = torch.where(union_s > 0, inter_s / union_s, torch.ones_like(union_s))
         niou_sum += iou_s.sum().item()
         niou_count += int(iou_s.numel())
-
-        tp += (pred * target).sum().item()
-        fp += (pred * (1 - target)).sum().item()
-        fn += ((1 - pred) * target).sum().item()
 
         pred_cpu = pred.detach().cpu()
         target_cpu = target.detach().cpu()
@@ -1042,10 +1110,9 @@ def validate(
         thr_sum += float(thr_used)
         thr_count += 1
 
-    miou_avg = total_inter / total_union if total_union > 0 else 0.0
+    miou_avg = sum(ious) / len(ious) if ious else 0.0
     niou_avg = niou_sum / niou_count if niou_count > 0 else 0.0
-    denom = (2.0 * tp + fp + fn)
-    f1_avg = (2.0 * tp) / denom if denom > 0 else 0.0
+    f1_avg = sum(f1s) / len(f1s) if f1s else 0.0
     pd_val, fa_val = pd_fa.get()
     thr_used = (thr_sum / thr_count) if thr_count > 0 else args.thr
     return miou_avg, niou_avg, f1_avg, pd_val, fa_val, thr_used
@@ -1275,12 +1342,21 @@ def main():
                    help="Path to pre-computed CLIP text features file (.pt).")
     p.add_argument("--mllm_text_dim", type=int, default=512,
                    help="Dimension of CLIP text features (512 for ViT-B/32).")
+    p.add_argument("--disable_text_conditioner", action="store_true",
+                   help="Disable FiLM-style text conditioning on image embeddings while keeping other text modules.")
     p.add_argument("--use_text_sparse_prompt", action="store_true",
-                   help="Project global CLIP text feature into extra sparse prompt token(s).")
+                   help="Project selected text feature source into extra sparse prompt token(s).")
     p.add_argument("--text_sparse_num_tokens", type=int, default=1,
                    help="Number of text sparse prompt tokens.")
     p.add_argument("--text_sparse_init_scale", type=float, default=0.02,
                    help="Init scale for text sparse base tokens.")
+    p.add_argument("--text_sparse_prompt_source", type=str, default="fused_tokens",
+                   choices=["raw_global", "fused_global", "fused_tokens"],
+                   help="Sparse prompt source: raw_global=original clip_text_feat, fused_global=post-fusion pooled text feature, fused_tokens=post-fusion token features (fallback to fused_global).")
+    p.add_argument("--text_sparse_raw_global_gate", action="store_true",
+                   help="Enable a small sigmoid gate on the enhanced raw_global sparse prompt delta path.")
+    p.add_argument("--text_sparse_raw_global_gate_init_bias", type=float, default=-2.0,
+                   help="Init bias for raw_global sparse prompt gate; more negative means weaker initial injection.")
     p.add_argument("--use_text_dense_prompt", action="store_true",
                    help="Generate a text-guided dense mask prompt from image embeddings + CLIP text feature.")
     p.add_argument("--text_dense_hidden_dim", type=int, default=128,
@@ -1312,12 +1388,18 @@ def main():
                    help="Residual scale for text token update in BiFusion.")
     p.add_argument("--use_bifusion_backbone_blocks", action="store_true",
                    help="Enable bidirectional text-vision fusion inside image encoder blocks.")
+    p.add_argument("--use_gated_bifusion_backbone_blocks", action="store_true",
+                   help="Enable gated backbone BiFusion for ablation; keeps block-level bidirectional fusion but gates text/vision updates.")
     p.add_argument("--bifusion_block_apply_every", type=int, default=1,
                    help="Apply backbone BiFusion every K encoder blocks.")
     p.add_argument("--bifusion_block_vision_res_scale", type=float, default=1.0,
                    help="Residual scale for vision-token update in backbone BiFusion.")
     p.add_argument("--bifusion_block_text_res_scale", type=float, default=1.0,
                    help="Residual scale for text-token update in backbone BiFusion.")
+    p.add_argument("--bifusion_gate_hidden_dim", type=int, default=0,
+                   help="Hidden dim for gated backbone BiFusion gates (<=0 uses hidden_dim//4).")
+    p.add_argument("--bifusion_gate_init_bias", type=float, default=-2.0,
+                   help="Initial bias for gated backbone BiFusion sigmoid gates (negative keeps gates conservative at start).")
     args = p.parse_args()
 
     ts = time.strftime("%Y%m%d_%H%M%S")
@@ -1663,7 +1745,7 @@ def main():
     pgap_text_prior_only = bool(getattr(args, "pgap_text_prior_only", False))
     if getattr(args, "use_mllm_prompt", False):
         img_dim = 256  # EfficientSAM-ViTT image embedding dim
-        if not pgap_text_prior_only:
+        if not pgap_text_prior_only and not getattr(args, "disable_text_conditioner", False):
             text_conditioner = build_text_conditioner(
                 img_dim=img_dim,
                 text_dim=args.mllm_text_dim,
@@ -1671,6 +1753,8 @@ def main():
             head_params += list(text_conditioner.parameters())
             n_tc = sum(p.numel() for p in text_conditioner.parameters())
             log_line(f"MLLM TextConditioner enabled: text_dim={args.mllm_text_dim}, params={n_tc}", args.log_file)
+        elif getattr(args, "disable_text_conditioner", False):
+            log_line("MLLM TextConditioner disabled by --disable_text_conditioner.", args.log_file)
         else:
             log_line("MLLM TextConditioner disabled by --pgap_text_prior_only.", args.log_file)
         if getattr(args, "use_text_sparse_prompt", False) and not pgap_text_prior_only:
@@ -1679,11 +1763,13 @@ def main():
                 embed_dim=getattr(model.prompt_encoder, "embed_dim", 256),
                 num_tokens=max(1, int(args.text_sparse_num_tokens)),
                 init_scale=float(args.text_sparse_init_scale),
+                use_raw_global_gate=bool(getattr(args, "text_sparse_raw_global_gate", False)),
+                raw_global_gate_init_bias=float(getattr(args, "text_sparse_raw_global_gate_init_bias", -2.0)),
             ).to(device)
             head_params += list(text_sparse_prompt.parameters())
             n_tsp = sum(p.numel() for p in text_sparse_prompt.parameters())
             log_line(
-                f"Text sparse prompt enabled: tokens={args.text_sparse_num_tokens}, params={n_tsp}",
+                f"Text sparse prompt enabled: source={args.text_sparse_prompt_source}, tokens={args.text_sparse_num_tokens}, gate={bool(getattr(args, 'text_sparse_raw_global_gate', False))}, params={n_tsp}",
                 args.log_file,
             )
         elif getattr(args, "use_text_sparse_prompt", False) and pgap_text_prior_only:
@@ -1736,7 +1822,12 @@ def main():
                     f"heads={args.bifusion_num_heads}, params={n_bf}",
                     args.log_file,
                 )
-        if getattr(args, "use_bifusion_backbone_blocks", False):
+        use_plain_backbone_bifusion = bool(getattr(args, "use_bifusion_backbone_blocks", False))
+        use_gated_backbone_bifusion = bool(getattr(args, "use_gated_bifusion_backbone_blocks", False))
+        if use_plain_backbone_bifusion and use_gated_backbone_bifusion:
+            log_line("[warn] Both --use_bifusion_backbone_blocks and --use_gated_bifusion_backbone_blocks are set; using gated backbone BiFusion.", args.log_file)
+            use_plain_backbone_bifusion = False
+        if use_plain_backbone_bifusion or use_gated_backbone_bifusion:
             if pgap_text_prior_only:
                 log_line("[info] Disabling backbone BiFusion due to --pgap_text_prior_only.", args.log_file)
             else:
@@ -1745,7 +1836,7 @@ def main():
                 except Exception:
                     vision_dim = int(getattr(args, "bifusion_interms_dim", 192))
                 num_layers = len(getattr(model.image_encoder, "blocks", []))
-                backbone_bifusion_adapter = build_backbone_bifusion_block_adapter(
+                common_kwargs = dict(
                     num_layers=max(1, int(num_layers)),
                     vision_dim=vision_dim,
                     text_dim=args.mllm_text_dim,
@@ -1754,22 +1845,41 @@ def main():
                     apply_every=max(1, int(getattr(args, "bifusion_block_apply_every", 1))),
                     vision_res_scale=float(getattr(args, "bifusion_block_vision_res_scale", 1.0)),
                     text_res_scale=float(getattr(args, "bifusion_block_text_res_scale", 1.0)),
-                ).to(device)
+                )
+                if use_gated_backbone_bifusion:
+                    backbone_bifusion_adapter = build_gated_backbone_bifusion_block_adapter(
+                        gate_hidden_dim=int(getattr(args, "bifusion_gate_hidden_dim", 0)),
+                        gate_init_bias=float(getattr(args, "bifusion_gate_init_bias", -2.0)),
+                        **common_kwargs,
+                    ).to(device)
+                else:
+                    backbone_bifusion_adapter = build_backbone_bifusion_block_adapter(
+                        **common_kwargs,
+                    ).to(device)
                 head_params += list(backbone_bifusion_adapter.parameters())
                 if hasattr(model.image_encoder, "set_text_block_fuser"):
                     model.image_encoder.set_text_block_fuser(backbone_bifusion_adapter)
                 else:
                     model.image_encoder.block_text_fuser = backbone_bifusion_adapter
                 n_bfb = sum(p.numel() for p in backbone_bifusion_adapter.parameters())
-                log_line(
-                    f"Backbone BiFusion enabled: layers={num_layers}, hidden={args.bifusion_hidden_dim}, "
-                    f"heads={args.bifusion_num_heads}, every={getattr(args, 'bifusion_block_apply_every', 1)}, params={n_bfb}",
-                    args.log_file,
-                )
+                if use_gated_backbone_bifusion:
+                    log_line(
+                        f"Gated Backbone BiFusion enabled: layers={num_layers}, hidden={args.bifusion_hidden_dim}, "
+                        f"heads={args.bifusion_num_heads}, every={getattr(args, 'bifusion_block_apply_every', 1)}, "
+                        f"gate_hidden={getattr(args, 'bifusion_gate_hidden_dim', 0)}, gate_bias={getattr(args, 'bifusion_gate_init_bias', -2.0)}, params={n_bfb}",
+                        args.log_file,
+                    )
+                else:
+                    log_line(
+                        f"Backbone BiFusion enabled: layers={num_layers}, hidden={args.bifusion_hidden_dim}, "
+                        f"heads={args.bifusion_num_heads}, every={getattr(args, 'bifusion_block_apply_every', 1)}, params={n_bfb}",
+                        args.log_file,
+                    )
     elif (
         getattr(args, "use_text_sparse_prompt", False)
         or getattr(args, "use_text_dense_prompt", False)
         or getattr(args, "use_bifusion_backbone_blocks", False)
+        or getattr(args, "use_gated_bifusion_backbone_blocks", False)
     ):
         log_line("[warn] Text sparse/dense/backbone-bifusion flags require --use_mllm_prompt; ignoring.", args.log_file)
     elif getattr(args, "use_bifusion_adapter", False):
