@@ -1,4 +1,4 @@
-﻿import os
+import os
 import time
 import argparse
 import json
@@ -62,6 +62,8 @@ from efficient_sam.text_conditioner import (
     build_text_dense_mask_prompt_generator_v2,
     build_text_sparse_prompt_projector,
 )
+from efficient_sam.self_prompting_head import build_self_prompting_head, self_prompt_heatmap_loss
+from efficient_sam.contrastive_prompt import build_contrastive_prompt_learning
 
 
 def dice_loss(logits, target):
@@ -410,6 +412,36 @@ def _merge_dense_mask_prompts(base_prompt, text_prompt, alpha: float):
     return (1.0 - a) * base_prompt + a * text_prompt
 
 
+def _merge_sparse_prompt_embeddings(base_prompt, extra_prompt):
+    if base_prompt is None:
+        return extra_prompt
+    if extra_prompt is None:
+        return base_prompt
+    extra_prompt = extra_prompt.to(device=base_prompt.device, dtype=base_prompt.dtype)
+    return torch.cat([base_prompt, extra_prompt], dim=1)
+
+
+def _build_self_prompt_sparse_tokens(
+    args,
+    contrastive_prompt,
+    pts,
+    lbl,
+    image_size,
+    training: bool,
+):
+    if contrastive_prompt is None:
+        return None, None
+    prompt_embed, contrastive_loss = contrastive_prompt(
+        pts[:, 0].float(),
+        lbl[:, 0].long(),
+        image_size=tuple(image_size),
+        return_loss=training,
+    )
+    if not bool(getattr(args, "self_prompt_inject_sparse_tokens", False)):
+        prompt_embed = None
+    return prompt_embed, contrastive_loss
+
+
 def _select_text_sparse_prompt_source(
     args,
     raw_clip_feat,
@@ -635,10 +667,16 @@ def train_one_epoch(
     text_dense_prompt=None,
     bifusion_adapter=None,
     backbone_bifusion_adapter=None,
+    self_prompt_head=None,
+    contrastive_prompt=None,
 ):
     model.train()
     if pgap is not None:
         pgap.train()
+    if self_prompt_head is not None:
+        self_prompt_head.train()
+    if contrastive_prompt is not None:
+        contrastive_prompt.train()
     pgap_text_prior_only = bool(getattr(args, "pgap_text_prior_only", False))
     bce = nn.BCEWithLogitsLoss()
     nwd_weight = float(getattr(args, "nwd_weight", 0.0))
@@ -703,6 +741,9 @@ def train_one_epoch(
                 output_size=(H, W),
             )
         mask_prompt = None
+        gt_pts = None
+        gt_lbl = None
+        self_prompt_heat_loss = None
         if pgap is not None:
             pgap_pts, pgap_lbl, saliency = _build_pgap_prompts(
                 pgap, images, masks, args, text_prior=pgap_text_prior
@@ -718,23 +759,41 @@ def train_one_epoch(
                 lbl = pgap_lbl.unsqueeze(1)
                 pts, lbl = pts.to(device), lbl.to(device)
             else:
-                pts, lbl = sample_points_from_mask(
+                gt_pts, gt_lbl = sample_points_from_mask(
                     masks,
                     n_pos=args.n_pos,
                     n_neg=args.n_neg,
                     boundary_prior=bool(args.boundary_prior_sampling),
                     boundary_ratio=float(args.boundary_ratio),
                 )
-                pts, lbl = pts.to(device), lbl.to(device)
+                pts, lbl = gt_pts.to(device), gt_lbl.to(device)
         else:
-            pts, lbl = sample_points_from_mask(
+            gt_pts, gt_lbl = sample_points_from_mask(
                 masks,
                 n_pos=args.n_pos,
                 n_neg=args.n_neg,
                 boundary_prior=bool(args.boundary_prior_sampling),
                 boundary_ratio=float(args.boundary_ratio),
             )
-            pts, lbl = pts.to(device), lbl.to(device)
+            gt_pts, gt_lbl = gt_pts.to(device), gt_lbl.to(device)
+            pts, lbl = gt_pts, gt_lbl
+            if self_prompt_head is not None:
+                _, sp_pts, sp_lbl, sp_logits = self_prompt_head(
+                    img_emb,
+                    output_size=(H, W),
+                    gt_mask=masks,
+                )
+                self_prompt_heat_loss = self_prompt_heatmap_loss(
+                    sp_logits,
+                    masks,
+                    pos_weight=float(getattr(args, "self_prompt_pos_weight", 10.0)),
+                )
+                mix_ratio = max(0.0, min(1.0, float(getattr(args, "self_prompt_mix_ratio", 0.5))))
+                if getattr(args, "self_prompt_mix_schedule", False):
+                    warmup = max(1, int(getattr(args, "self_prompt_warmup", 30)))
+                    mix_ratio = mix_ratio * min(1.0, float(epoch) / float(warmup))
+                if float(torch.rand(1).item()) < mix_ratio:
+                    pts, lbl = sp_pts.to(device), sp_lbl.to(device)
         if pgap_text_prior_only:
             text_sparse_embeds, text_dense_mask = None, None
             mask_prompt_eff = mask_prompt
@@ -752,6 +811,21 @@ def train_one_epoch(
                 text_dense_mask,
                 getattr(args, "text_dense_prompt_merge_alpha", 0.5),
             )
+        contrastive_sparse_prompt = None
+        contrastive_loss = None
+        if contrastive_prompt is not None and pgap is None:
+            contrastive_sparse_prompt, contrastive_loss = _build_self_prompt_sparse_tokens(
+                args,
+                contrastive_prompt,
+                pts,
+                lbl,
+                image_size=(H, W),
+                training=True,
+            )
+        sparse_prompt_eff = _merge_sparse_prompt_embeddings(
+            text_sparse_embeds,
+            contrastive_sparse_prompt,
+        )
         # HQ warmup: force using only HQ mask during early epochs
         use_hq_only = bool(args.hq_token_only or (args.hq_warmup_epochs > 0 and epoch <= args.hq_warmup_epochs))
         pred_masks, _ = model.predict_masks(
@@ -760,7 +834,7 @@ def train_one_epoch(
             pts,
             lbl,
             batched_masks=mask_prompt_eff,
-            text_sparse_embeddings=text_sparse_embeds,
+            text_sparse_embeddings=sparse_prompt_eff,
             multimask_output=False,
             input_h=H,
             input_w=W,
@@ -797,6 +871,10 @@ def train_one_epoch(
         if scr_criterion is not None:
             scr_loss_val = scr_criterion(logits, masks.unsqueeze(1), images)
             loss = loss + args.scr_weight * scr_loss_val
+        if self_prompt_heat_loss is not None:
+            loss = loss + float(getattr(args, "self_prompt_sup_weight", 0.3)) * self_prompt_heat_loss
+        if contrastive_loss is not None and float(getattr(args, "self_prompt_cl_weight", 0.0)) > 0.0:
+            loss = loss + float(getattr(args, "self_prompt_cl_weight", 0.0)) * contrastive_loss
         # Prompt-Robust Consistency Loss
         if getattr(args, 'use_prompt_robust_loss', False) and pgap is None:
             # 生成扰动 prompt 点
@@ -816,6 +894,18 @@ def train_one_epoch(
                 text_sparse_prompt=text_sparse_prompt,
                 text_dense_prompt=text_dense_prompt,
             )
+            contrastive_sparse_prompt_p, _ = _build_self_prompt_sparse_tokens(
+                args,
+                contrastive_prompt,
+                pts_perturbed,
+                lbl,
+                image_size=(H, W),
+                training=False,
+            )
+            sparse_prompt_eff_p = _merge_sparse_prompt_embeddings(
+                text_sparse_embeds_p,
+                contrastive_sparse_prompt_p,
+            )
             pred_masks_p, _ = model.predict_masks(
                 img_emb.detach(),  # detach to avoid double backward through encoder
                 interms,
@@ -826,7 +916,7 @@ def train_one_epoch(
                     text_dense_mask_p,
                     getattr(args, "text_dense_prompt_merge_alpha", 0.5),
                 ),
-                text_sparse_embeddings=text_sparse_embeds_p,
+                text_sparse_embeddings=sparse_prompt_eff_p,
                 multimask_output=False,
                 input_h=H, input_w=W,
                 output_h=H, output_w=W,
@@ -899,13 +989,23 @@ def validate(
     text_dense_prompt=None,
     bifusion_adapter=None,
     backbone_bifusion_adapter=None,
+    self_prompt_head=None,
+    contrastive_prompt=None,
 ):
     model.eval()
     if pgap is not None:
         pgap.eval()
+    if self_prompt_head is not None:
+        self_prompt_head.eval()
+    if contrastive_prompt is not None:
+        contrastive_prompt.eval()
     pgap_text_prior_only = bool(getattr(args, "pgap_text_prior_only", False))
-    # Batch-average protocol: compute mIoU/F1 per batch, then average across batches.
-    ious, f1s = [], []
+    # Compute metrics exactly matching definitions:
+    # mIoU: Global Intersection / Global Union
+    # nIoU: Mean of per-image IoUs
+    f1s = []
+    global_inter = 0.0
+    global_union = 0.0
     niou_sum = 0.0
     niou_count = 0
     thr_sum = 0.0
@@ -1035,14 +1135,21 @@ def validate(
                 lbl = pgap_lbl.unsqueeze(1)
                 pts, lbl = pts.to(device), lbl.to(device)
         else:
-            pts, lbl = sample_points_from_mask(
-                masks,
-                n_pos=args.n_pos,
-                n_neg=args.n_neg,
-                boundary_prior=bool(args.boundary_prior_sampling),
-                boundary_ratio=float(args.boundary_ratio),
-            )
-            pts, lbl = pts.to(device), lbl.to(device)
+            if self_prompt_head is not None:
+                _, pts, lbl, _ = self_prompt_head(
+                    img_emb,
+                    output_size=(H, W),
+                )
+                pts, lbl = pts.to(device), lbl.to(device)
+            else:
+                pts, lbl = sample_points_from_mask(
+                    masks,
+                    n_pos=args.n_pos,
+                    n_neg=args.n_neg,
+                    boundary_prior=bool(args.boundary_prior_sampling),
+                    boundary_ratio=float(args.boundary_ratio),
+                )
+                pts, lbl = pts.to(device), lbl.to(device)
         if pgap_text_prior_only:
             text_sparse_embeds, text_dense_mask = None, None
             mask_prompt_eff = mask_prompt
@@ -1060,6 +1167,18 @@ def validate(
                 text_dense_mask,
                 getattr(args, "text_dense_prompt_merge_alpha", 0.5),
             )
+        contrastive_sparse_prompt, _ = _build_self_prompt_sparse_tokens(
+            args,
+            contrastive_prompt,
+            pts,
+            lbl,
+            image_size=(H, W),
+            training=False,
+        )
+        sparse_prompt_eff = _merge_sparse_prompt_embeddings(
+            text_sparse_embeds,
+            contrastive_sparse_prompt,
+        )
         use_hq_only = bool(args.hq_token_only or (args.hq_warmup_epochs > 0 and epoch <= args.hq_warmup_epochs))
         pred_masks, _ = model.predict_masks(
             img_emb,
@@ -1067,7 +1186,7 @@ def validate(
             pts,
             lbl,
             batched_masks=mask_prompt_eff,
-            text_sparse_embeddings=text_sparse_embeds,
+            text_sparse_embeddings=sparse_prompt_eff,
             multimask_output=False,
             input_h=H,
             input_w=W,
@@ -1088,19 +1207,23 @@ def validate(
         else:
             thr_used = args.thr
 
-        miou, mf1 = compute_metrics(logits, masks.unsqueeze(1), thr=thr_used)
-        ious.append(miou)
-        f1s.append(mf1)
-
         prob = torch.sigmoid(logits)
         pred = (prob >= thr_used).float()
         target = masks.unsqueeze(1).float()
+
+        inter = (pred * target).sum().item()
+        union = (pred + target - pred * target).sum().item()
+        global_inter += inter
+        global_union += union
 
         inter_s = (pred * target).sum(dim=(1, 2, 3))
         union_s = (pred + target - pred * target).sum(dim=(1, 2, 3))
         iou_s = torch.where(union_s > 0, inter_s / union_s, torch.ones_like(union_s))
         niou_sum += iou_s.sum().item()
         niou_count += int(iou_s.numel())
+
+        f1_batch = compute_metrics(logits, masks.unsqueeze(1), thr=thr_used)[1]
+        f1s.append(f1_batch)
 
         pred_cpu = pred.detach().cpu()
         target_cpu = target.detach().cpu()
@@ -1110,7 +1233,7 @@ def validate(
         thr_sum += float(thr_used)
         thr_count += 1
 
-    miou_avg = sum(ious) / len(ious) if ious else 0.0
+    miou_avg = (global_inter / global_union) if global_union > 0 else 1.0
     niou_avg = niou_sum / niou_count if niou_count > 0 else 0.0
     f1_avg = sum(f1s) / len(f1s) if f1s else 0.0
     pd_val, fa_val = pd_fa.get()
@@ -1174,6 +1297,8 @@ def main():
                    help="Edge-aware high-frequency boost factor for RadialFreqGate (set 0 to disable).")
     p.add_argument("--rgate_high_freq_thresh", type=float, default=0.6,
                    help="Normalized radial threshold above which frequencies are treated as high.")
+    p.add_argument("--use_amgd", action="store_true", help="Enable AMGD multi-grained feature extraction")
+    p.add_argument("--use_dog_amgd", action="store_true", help="Use DoG (Difference of Gaussians) differential fusion within AMGD")
     # ASG gate for HQ-SAM (optional)
     p.add_argument("--use_asg_hq", action="store_true", help="Enable AnisotropicSpectralGating for HQ-SAM.")
     p.add_argument("--asg_loc", type=str, default="encoder", choices=["encoder", "decoder", "both"],
@@ -1252,6 +1377,40 @@ def main():
                    help="Weight for prompt robustness consistency loss.")
     p.add_argument("--prompt_robust_perturb_std", type=float, default=3.0,
                    help="Std of Gaussian noise added to prompt points (pixels).")
+    p.add_argument("--use_self_prompting", action="store_true",
+                   help="Enable a self-prompting head that predicts SAM prompt points from encoder features.")
+    p.add_argument("--self_prompt_hidden_channels", type=int, default=64,
+                   help="Hidden channels for the self-prompting heatmap head.")
+    p.add_argument("--self_prompt_top_k_pos", type=int, default=None,
+                   help="Number of positive self-prompt points (defaults to --n_pos).")
+    p.add_argument("--self_prompt_top_k_neg", type=int, default=None,
+                   help="Number of negative self-prompt points (defaults to --n_neg).")
+    p.add_argument("--self_prompt_min_dist", type=int, default=8,
+                   help="Minimum spacing between self-prompt peaks.")
+    p.add_argument("--self_prompt_peak_thr", type=float, default=0.1,
+                   help="Peak threshold used when extracting self-prompt candidates.")
+    p.add_argument("--self_prompt_low_response_thr", type=float, default=0.3,
+                   help="Fallback threshold for low-response negative sampling.")
+    p.add_argument("--self_prompt_sup_weight", type=float, default=0.3,
+                   help="Weight of the self-prompt heatmap supervision loss.")
+    p.add_argument("--self_prompt_pos_weight", type=float, default=10.0,
+                   help="Positive-pixel weight used in the self-prompt heatmap loss.")
+    p.add_argument("--self_prompt_mix_ratio", type=float, default=0.5,
+                   help="Probability of replacing GT prompts with self-prompted points during training.")
+    p.add_argument("--self_prompt_warmup", type=int, default=30,
+                   help="Warmup epochs used by the self-prompt mix schedule.")
+    p.add_argument("--self_prompt_mix_schedule", action="store_true",
+                   help="Ramp the self-prompt mix ratio linearly during warmup.")
+    p.add_argument("--self_prompt_cl_weight", type=float, default=0.03,
+                   help="Weight of the contrastive prompt auxiliary loss.")
+    p.add_argument("--self_prompt_cl_proj_dim", type=int, default=128,
+                   help="Projection dimension used by the contrastive prompt module.")
+    p.add_argument("--self_prompt_cl_temperature", type=float, default=0.07,
+                   help="Temperature used by the contrastive prompt loss.")
+    p.add_argument("--self_prompt_cl_loss", type=str, default="infonce", choices=["infonce", "ntxent", "triplet"],
+                   help="Contrastive loss type for prompt embedding regularization.")
+    p.add_argument("--self_prompt_inject_sparse_tokens", action="store_true",
+                   help="Inject contrastive prompt embeddings as extra sparse tokens into the SAM prompt encoder.")
     # Proposed options (default OFF)
     p.add_argument("--use_point_loss", action="store_true",
                    help="Enable uncertainty-based point sampling BCE+Dice as auxiliary loss.")
@@ -1460,13 +1619,15 @@ def main():
 
     # Model
     model = build_efficient_sam_hq(
-        encoder_patch_embed_dim=192,
-        encoder_num_heads=3,
+        encoder_patch_embed_dim=192 if args.model == "vitt" else 384,
+        encoder_num_heads=3 if args.model == "vitt" else 6,
         init_from_baseline=args.init_from_baseline,
         use_adapter=args.use_fs_adapter,
         use_ms_fusion=args.use_ms_fusion,
         use_detail_enhancer=args.use_detail_enhancer,
-        early_exit_layer=args.early_exit_layer,
+        early_exit_layer=getattr(args, "early_exit_layer", None),
+        use_amgd=getattr(args, "use_amgd", False),
+        use_dog_amgd=getattr(args, "use_dog_amgd", False)
     )
     # Attach frequency gates if requested
     if args.use_asg_hq and args.use_radial_gate_hq:
@@ -1709,6 +1870,8 @@ def main():
             p.requires_grad = False
         allow_keys = [
             "hf_token", "hf_mlp", "compress_vit_feat", "embedding_encoder", "embedding_maskfeature",
+            # AMGD components need to be trained from scratch initially
+            "amgd_fine", "amgd_mid", "amgd_coarse", "amgd_router"
         ]
         for key in allow_keys:
             mod = getattr(md, key, None)
@@ -1735,6 +1898,61 @@ def main():
         head_params += list(model.ms_aggregator.parameters())
     if hasattr(model, "detail_enhancer") and model.detail_enhancer is not None:
         head_params += list(model.detail_enhancer.parameters())
+
+    self_prompt_head = None
+    contrastive_prompt = None
+    if getattr(args, "use_self_prompting", False):
+        if getattr(args, "use_pgap", False):
+            log_line("[warn] --use_self_prompting only applies when --use_pgap is disabled; PGAP will remain the active prompt generator.", args.log_file)
+        try:
+            try:
+                neck_dim = model.image_encoder.neck[0].out_channels
+            except Exception:
+                neck_dim = 256
+            sp_top_k_pos = int(args.self_prompt_top_k_pos) if args.self_prompt_top_k_pos is not None else int(args.n_pos)
+            sp_top_k_neg = int(args.self_prompt_top_k_neg) if args.self_prompt_top_k_neg is not None else int(args.n_neg)
+            self_prompt_head = build_self_prompting_head(
+                in_channels=neck_dim,
+                hidden_channels=max(8, int(args.self_prompt_hidden_channels)),
+                top_k_pos=max(1, sp_top_k_pos),
+                top_k_neg=max(0, sp_top_k_neg),
+                min_dist=max(1, int(args.self_prompt_min_dist)),
+                peak_thr=float(getattr(args, "self_prompt_peak_thr", 0.1)),
+                low_response_thr=float(getattr(args, "self_prompt_low_response_thr", 0.3)),
+            ).to(device)
+            head_params += list(self_prompt_head.parameters())
+            n_sp = sum(p.numel() for p in self_prompt_head.parameters())
+            log_line(
+                f"Self-prompting enabled: pos={max(1, sp_top_k_pos)}, neg={max(0, sp_top_k_neg)}, "
+                f"mix_ratio={float(getattr(args, 'self_prompt_mix_ratio', 0.5)):.2f}, warmup={int(getattr(args, 'self_prompt_warmup', 30))}, "
+                f"sup_weight={float(getattr(args, 'self_prompt_sup_weight', 0.3)):.3f}, params={n_sp}",
+                args.log_file,
+            )
+        except Exception as e:
+            log_line(f"[warn] Failed to initialize self-prompt head: {e}", args.log_file)
+            self_prompt_head = None
+        if self_prompt_head is not None and (
+            float(getattr(args, "self_prompt_cl_weight", 0.0)) > 0.0
+            or bool(getattr(args, "self_prompt_inject_sparse_tokens", False))
+        ):
+            try:
+                contrastive_prompt = build_contrastive_prompt_learning(
+                    embed_dim=getattr(model.prompt_encoder, "embed_dim", 256),
+                    proj_dim=max(8, int(getattr(args, "self_prompt_cl_proj_dim", 128))),
+                    temperature=float(getattr(args, "self_prompt_cl_temperature", 0.07)),
+                    loss_type=str(getattr(args, "self_prompt_cl_loss", "infonce")),
+                ).to(device)
+                head_params += list(contrastive_prompt.parameters())
+                n_cp = sum(p.numel() for p in contrastive_prompt.parameters())
+                log_line(
+                    f"Contrastive prompt enabled: loss={getattr(args, 'self_prompt_cl_loss', 'infonce')}, "
+                    f"proj_dim={int(getattr(args, 'self_prompt_cl_proj_dim', 128))}, temp={float(getattr(args, 'self_prompt_cl_temperature', 0.07)):.3f}, "
+                    f"inject_tokens={bool(getattr(args, 'self_prompt_inject_sparse_tokens', False))}, params={n_cp}",
+                    args.log_file,
+                )
+            except Exception as e:
+                log_line(f"[warn] Failed to initialize contrastive prompt module: {e}", args.log_file)
+                contrastive_prompt = None
 
     # MLLM text modules (global CLIP feature -> FiLM / sparse prompt / dense mask prompt)
     text_conditioner = None
@@ -1918,6 +2136,8 @@ def main():
             text_dense_prompt=text_dense_prompt,
             bifusion_adapter=bifusion_adapter,
             backbone_bifusion_adapter=backbone_bifusion_adapter,
+            self_prompt_head=self_prompt_head,
+            contrastive_prompt=contrastive_prompt,
         )
         miou, niou, mf1, pd_val, fa_val, thr_used = validate(
             model, val_loader, device, args, epoch, pgap=pgap,
@@ -1926,6 +2146,8 @@ def main():
             text_dense_prompt=text_dense_prompt,
             bifusion_adapter=bifusion_adapter,
             backbone_bifusion_adapter=backbone_bifusion_adapter,
+            self_prompt_head=self_prompt_head,
+            contrastive_prompt=contrastive_prompt,
         )
         dt = time.time() - t0
         log_line(
@@ -1952,6 +2174,10 @@ def main():
                 head_params += list(model.ms_aggregator.parameters())
             if hasattr(model, "detail_enhancer") and model.detail_enhancer is not None:
                 head_params += list(model.detail_enhancer.parameters())
+            if self_prompt_head is not None:
+                head_params += list(self_prompt_head.parameters())
+            if contrastive_prompt is not None:
+                head_params += list(contrastive_prompt.parameters())
             if text_conditioner is not None:
                 head_params += list(text_conditioner.parameters())
             if text_sparse_prompt is not None:
@@ -1986,6 +2212,10 @@ def main():
             "best_iou": best_iou,
             "args": vars(args),
         }
+        if self_prompt_head is not None:
+            ckpt["self_prompt_head"] = self_prompt_head.state_dict()
+        if contrastive_prompt is not None:
+            ckpt["contrastive_prompt"] = contrastive_prompt.state_dict()
         if text_conditioner is not None:
             ckpt["text_conditioner"] = text_conditioner.state_dict()
         if text_sparse_prompt is not None:

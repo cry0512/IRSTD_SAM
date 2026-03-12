@@ -1,0 +1,15 @@
+{
+  "checkpoint": "E:\\code\\EfficientSAM-main\\EfficientSAM-main\\outputs_sam_sirst_hq\\IRSTD1k_HQ_mllm_Qwen3_tokenCLIP_GatedBkBiFusion_NoFiLM_TSP1rawGate_nodense_notrain_SC_20260303_194007\\best_ep063_miou76p19_niou76p07_f158p96_pd96p43_fa65p36.pt",
+  "checkpoint_epoch": 63,
+  "data_root": "E:\\code\\SIRST-5K-main\\SIRST-5K-main\\dataset\\IRSTD-1k",
+  "split_txt": "E:\\code\\SIRST-5K-main\\SIRST-5K-main\\dataset\\IRSTD-1k\\50_50\\test.txt",
+  "mllm_features_path": "E:\\code\\SIRST-5K-main\\SIRST-5K-main\\dataset\\IRSTD-1k\\Qwen3-VL-8B-Instruct_mllm_clip_token_features.pt",
+  "out_dir": "E:\\code\\EfficientSAM-main\\EfficientSAM-main\\outputs_sam_sirst_hq\\IRSTD1k_HQ_mllm_Qwen3_tokenCLIP_GatedBkBiFusion_NoFiLM_TSP1rawGate_nodense_notrain_SC_20260303_194007\\infer_test_vis_best_ep063_miou76p19_niou76p07_f158p96_pd96p43_fa65p36",
+  "prompt_mode": "gt_mask_sampled_points",
+  "inference_mode": "full_image",
+  "threshold": 0.5,
+  "seed": 123,
+  "num_samples": 201,
+  "mean_iou": 0.532004970718935,
+  "mean_f1": 0.6625954052711378
+}

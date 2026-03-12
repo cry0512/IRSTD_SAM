@@ -1,4 +1,4 @@
-﻿NUDT‑SIRST（GPU 0）（注意哪张卡！！！什么预训练模型！！！)
+NUDT‑SIRST（GPU 0）（注意哪张卡！！！什么预训练模型！！！)
 ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST"; \
 GPU=4; SIZE=256; BS=4; EPOCHS=1500; MODEL="vits"; KP=1; TRAIN_DIR="50_50"; MASK_SFX=""; \
 DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; SFX_TAG=""; \
@@ -977,7 +977,7 @@ python -u train_sirst_hq.py --data_root $ROOT --train_txt "$TRAIN_DIR\train.txt"
 2>&1 | Tee-Object -FilePath "$LOG_ROOT\train_$TS.log"
 
 -----各向异性光谱门控（ASG）+SCTransNet预处理训练脚本-unbuntu服务器训练NUDT脚本
-nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=6;
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=5;
 ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
 SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
 DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
@@ -988,15 +988,19 @@ python -u train_sirst_hq_ubuntu.py \
   --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
   --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
   --sctransnet_preproc --sc_use_gamma --sc_pos_prob 0.5 \
-  --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 \
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 60 \
+  --n_pos 12 --n_neg 24 \
+  --boundary_prior_sampling --boundary_ratio 0.5 \
   --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search \
+  --val_thr_search --val_thr_min 0.37 --val_thr_max 0.41 --val_thr_step 0.01 \
+  --lr_head 1e-4 --lr_encoder 5e-6 \
   --use_asg_hq --asg_variant asg2 --asg_loc both --asg_radial_bins 64 --asg_angular_bins 128 \
   --asg_strength_enc 1.0 --asg_strength_dec 1.0 \
   --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
   2>&1 | tee "$LOG_ROOT/train_${TS}.log"' >/dev/null 2>&1 &
 
 -----各向异性光谱门控（ASG）+SCTransNet预处理训练脚本-unbuntu服务器训练IRSTD-1k脚本
-nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=0;
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=6;
 ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/IRSTD-1k";
 SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
 DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
@@ -1006,8 +1010,10 @@ kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
 python -u train_sirst_hq_ubuntu.py \
   --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
   --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 60 \
+  --boundary_prior_sampling --boundary_ratio 0.5 \
   --sctransnet_preproc --sc_use_gamma --sc_pos_prob 0.5 \
-  --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 \
+  --boundary_prior_sampling --boundary_ratio 0.5 \
   --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search \
   --use_asg_hq --asg_variant asg2 --asg_loc both --asg_radial_bins 64 --asg_angular_bins 128 \
   --asg_strength_enc 1.0 --asg_strength_dec 1.0 \
@@ -1015,7 +1021,7 @@ python -u train_sirst_hq_ubuntu.py \
   2>&1 | tee "$LOG_ROOT/train_${TS}.log"' >/dev/null 2>&1 &
 
 -----各向异性光谱门控（ASG）+SCTransNet预处理训练脚本-unbuntu服务器训练NUAA-SIRST脚本
-nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=2;
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=1;
 ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUAA-SIRST";
 SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; MASK_SFX="_pixels0";
 DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; SFX="${MASK_SFX}";
@@ -1026,7 +1032,8 @@ python -u train_sirst_hq_ubuntu.py \
   --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
   --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
   --sctransnet_preproc --sc_use_gamma --sc_pos_prob 0.5 \
-  --hq_warmup_epochs 30 --boundary_prior_sampling --boundary_ratio 0.5 \
+  --boundary_prior_sampling --boundary_ratio 0.5 \
+  --hq_warmup_epochs 60 --n_pos 12 --n_neg 24 --freeze_encoder_epochs 10 --lr_head 1e-4 \
   --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search \
   --use_asg_hq --asg_variant asg2 --asg_loc both --asg_radial_bins 64 --asg_angular_bins 128 \
   --asg_strength_enc 1.0 --asg_strength_dec 1.0 \
@@ -1651,7 +1658,7 @@ python -u train_sirst_hq.py `
 
 
 -----各向异性光谱门控（ASG）+相位引导的自动提示机制（PGAP）训练脚本-ubuntu训练脚本
-nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=6;
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=5;
 ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
 SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
 DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
@@ -2786,6 +2793,50 @@ python -u train_sirst_hq_ubuntu.py \
   --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
   >/dev/null 2>&1 &'
 
+# IRSTD-1k + token-level CLIP + GatedBackboneBiFusion + NoFiLM + TSP + nodense + Qwen3 + MLLM (Ubuntu)
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=1;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/IRSTD-1k";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_mllm_Qwen3_tokenCLIP_GatedBkBiFusion_NoFiLM_TSP1rawGate_nodense_SC_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 60 \
+  --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search \
+  --sctransnet_preproc --sc_use_gamma --sc_pos_prob 0.5 \
+  --use_mllm_prompt --disable_text_conditioner --mllm_features_path "${ROOT}/Qwen3-VL-8B-Instruct_mllm_clip_token_features.pt" \
+  --use_gated_bifusion_backbone_blocks --bifusion_hidden_dim 128 --bifusion_num_heads 4 \
+  --bifusion_block_apply_every 1 --bifusion_block_vision_res_scale 1.0 --bifusion_block_text_res_scale 1.0 \
+  --bifusion_gate_hidden_dim 0 --bifusion_gate_init_bias -2.0 \
+  --use_text_sparse_prompt --text_sparse_num_tokens 1 --text_sparse_prompt_source raw_global \
+  --text_sparse_raw_global_gate --text_sparse_raw_global_gate_init_bias -2.0 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
+  >/dev/null 2>&1 &'
+
+ # IRSTD-1k + token-level CLIP + GatedBackboneBiFusion + NoFiLM + nosparse + nodense + Qwen3 + MLLM (Ubuntu)
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=0;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/IRSTD-1k";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_mllm_Qwen3_tokenCLIP_GatedBkBiFusion_NoFiLM_nosparse_nodense_SC_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 60 \
+  --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search \
+  --sctransnet_preproc --sc_use_gamma --sc_pos_prob 0.5 \
+  --use_mllm_prompt --disable_text_conditioner --mllm_features_path "${ROOT}/Qwen3-VL-8B-Instruct_mllm_clip_token_features.pt" \
+  --use_gated_bifusion_backbone_blocks --bifusion_hidden_dim 128 --bifusion_num_heads 4 \
+  --bifusion_block_apply_every 1 --bifusion_block_vision_res_scale 1.0 --bifusion_block_text_res_scale 1.0 \
+  --bifusion_gate_hidden_dim 0 --bifusion_gate_init_bias -2.0 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
+  >/dev/null 2>&1 &' 
+
 # NUDT-SIRST + token-level CLIP + GatedBackboneBiFusion + NoFiLM + TSP + TDP(token_xattn) + Qwen3 + MLLM (Ubuntu)
 nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=0;
 ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
@@ -2807,6 +2858,29 @@ python -u train_sirst_hq_ubuntu.py \
   --use_text_sparse_prompt --text_sparse_num_tokens 1 --text_sparse_prompt_source raw_global \
   --text_sparse_raw_global_gate --text_sparse_raw_global_gate_init_bias -2.0 \
   --use_text_dense_prompt --text_dense_prompt_type token_xattn --text_dense_num_heads 4 --text_dense_prompt_merge_alpha 0.3 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
+  >/dev/null 2>&1 &'
+
+# NUDT-SIRST + token-level CLIP + GatedBackboneBiFusion + NoFiLM + TSP + nodense + Qwen3 + MLLM (Ubuntu)
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=2;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_mllm_Qwen3_tokenCLIP_GatedBkBiFusion_NoFiLM_TSP1rawGate_nodense_SC_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 \
+  --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 --val_thr_search \
+  --sctransnet_preproc --sc_use_gamma --sc_pos_prob 0.5 \
+  --use_mllm_prompt --disable_text_conditioner --mllm_features_path "${ROOT}/Qwen3-VL-8B-Instruct_mllm_clip_token_features.pt" \
+  --use_gated_bifusion_backbone_blocks --bifusion_hidden_dim 128 --bifusion_num_heads 4 \
+  --bifusion_block_apply_every 1 --bifusion_block_vision_res_scale 1.0 --bifusion_block_text_res_scale 1.0 \
+  --bifusion_gate_hidden_dim 0 --bifusion_gate_init_bias -2.0 \
+  --use_text_sparse_prompt --text_sparse_num_tokens 1 --text_sparse_prompt_source raw_global \
+  --text_sparse_raw_global_gate --text_sparse_raw_global_gate_init_bias -2.0 \
   --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
   >/dev/null 2>&1 &'
 
@@ -2837,6 +2911,32 @@ python -u train_sirst_hq_ubuntu.py \
   --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
   >/dev/null 2>&1 &'
 
+# NUAA-SIRST + token-level CLIP + GatedBackboneBiFusion + NoFiLM + TSP + nodense +Qwen3 + MLLM (Ubuntu)
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=1;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUAA-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; MASK_SFX="_pixels0";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; SFX_TAG="";
+if [ -n "$MASK_SFX" ]; then SFX_TAG="_msfx${MASK_SFX#_}"; fi;
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_mllm_Qwen3_tokenCLIP_GatedBkBiFusion_NoFiLM_TSP1rawGate_nodense_SC_bs${BS}_e${EPOCHS}_kp${KP}${SFX_TAG}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 60 --n_pos 12 --n_neg 24 --freeze_encoder_epochs 10 --lr_head 1e-4 \
+  --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 \
+  --val_thr_search --val_thr_min 0.40 --val_thr_max 0.55 --val_thr_step 0.05 \
+  --sctransnet_preproc --sc_use_gamma --sc_pos_prob 0.5 \
+  --mask_suffix "$MASK_SFX" \
+  --use_mllm_prompt --disable_text_conditioner --mllm_features_path "${ROOT}/Qwen3-VL-8B-Instruct_mllm_clip_token_features.pt" \
+  --use_gated_bifusion_backbone_blocks --bifusion_hidden_dim 128 --bifusion_num_heads 4 \
+  --bifusion_block_apply_every 2 --bifusion_block_vision_res_scale 0.3 --bifusion_block_text_res_scale 0.3 \
+  --bifusion_gate_hidden_dim 0 --bifusion_gate_init_bias -2.0 \
+  --use_text_sparse_prompt --text_sparse_num_tokens 1 --text_sparse_prompt_source raw_global \
+  --text_sparse_raw_global_gate --text_sparse_raw_global_gate_init_bias -2.0 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
+  >/dev/null 2>&1 &'
+
 # IRSTD-1k + token-level CLIP + GatedBackboneBiFusion + NoFiLM + TSP + TDP(token_xattn) + Qwen3 + MLLM (Windows PowerShell)
 python train_sirst_hq.py `
   --data_root "E:\code\SIRST-5K-main\SIRST-5K-main\dataset\IRSTD-1k" `
@@ -2856,6 +2956,25 @@ python train_sirst_hq.py `
   --use_text_dense_prompt --text_dense_prompt_type token_xattn --text_dense_num_heads 4 --text_dense_prompt_merge_alpha 0.3 `
   --init_from_baseline weights/efficient_sam_vitt.pt `
   --exp_name "IRSTD1k_HQ_mllm_Qwen3_tokenCLIP_GatedBkBiFusion_NoFiLM_TSP1rawGate_TDPxattn03_SC"
+
+# IRSTD-1k + token-level CLIP + GatedBackboneBiFusion + NoFiLM + TSP + nodense+ Qwen3 + MLLM (Windows PowerShell)
+python train_sirst_hq.py `
+  --data_root "E:\code\SIRST-5K-main\SIRST-5K-main\dataset\IRSTD-1k" `
+  --train_txt "50_50\train.txt" --val_txt "50_50\test.txt" `
+  --size 256 --keep_ratio_pad --batch_size 4 --epochs 1000 --model vitt `
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 60 `
+  --boundary_prior_sampling --boundary_ratio 0.5 `
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 `
+  --val_thr_search `
+  --sctransnet_preproc --sc_use_gamma --sc_pos_prob 0.5 `
+  --use_mllm_prompt --disable_text_conditioner --mllm_features_path "E:\code\SIRST-5K-main\SIRST-5K-main\dataset\IRSTD-1k\Qwen3-VL-8B-Instruct_mllm_clip_token_features.pt" `
+  --use_gated_bifusion_backbone_blocks --bifusion_hidden_dim 128 --bifusion_num_heads 4 `
+  --bifusion_block_apply_every 1 --bifusion_block_vision_res_scale 1.0 --bifusion_block_text_res_scale 1.0 `
+  --bifusion_gate_hidden_dim 0 --bifusion_gate_init_bias -2.0 `
+  --use_text_sparse_prompt --text_sparse_num_tokens 1 --text_sparse_prompt_source raw_global `
+  --text_sparse_raw_global_gate --text_sparse_raw_global_gate_init_bias -2.0 `
+  --init_from_baseline weights/efficient_sam_vitt.pt `
+  --exp_name "IRSTD1k_HQ_mllm_Qwen3_tokenCLIP_GatedBkBiFusion_NoFiLM_TSP1rawGate_nodense_SC"
 
 # NUDT-SIRST + token-level CLIP + GatedBackboneBiFusion + NoFiLM + TSP + TDP(token_xattn) + Qwen3 + MLLM (Windows PowerShell)
 python train_sirst_hq.py `
@@ -2936,7 +3055,7 @@ python train_sirst_hq.py `
 ==================== NUDT-SIRST 优化版: GatedBackboneBiFusion + NoFiLM + raw_global gate TSP + TDP(token_xattn) ====================
 
 # NUDT-SIRST optimized + token-level CLIP + GatedBackboneBiFusion + NoFiLM + raw_global gate TSP + TDP(token_xattn) + Qwen3 + MLLM (Ubuntu, GPU 5)
-nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=5;
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=3;
 ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
 SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
 DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
@@ -2962,6 +3081,32 @@ python -u train_sirst_hq_ubuntu.py \
   --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
   >/dev/null 2>&1 &'
 
+# NUDT-SIRST optimized + token-level CLIP + GatedBackboneBiFusion + NoFiLM + raw_global gate TSP + nodense + Qwen3 + MLLM (Ubuntu, GPU 5)
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=2;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_mllm_Qwen3_tokenCLIP_GatedBkBiFusion_NoFiLM_TSP1rawGate_nodense_SC_fixFreeze60_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 60 \
+  --n_pos 12 --n_neg 24 \
+  --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 \
+  --val_thr_search --val_thr_min 0.37 --val_thr_max 0.41 --val_thr_step 0.01 \
+  --lr_head 1e-4 --lr_encoder 5e-6 \
+  --sctransnet_preproc --sc_use_gamma --sc_pos_prob 0.5 \
+  --use_mllm_prompt --disable_text_conditioner --mllm_features_path "${ROOT}/Qwen3-VL-8B-Instruct_mllm_clip_token_features.pt" \
+  --use_gated_bifusion_backbone_blocks --bifusion_hidden_dim 128 --bifusion_num_heads 4 \
+  --bifusion_block_apply_every 1 --bifusion_block_vision_res_scale 1.0 --bifusion_block_text_res_scale 1.0 \
+  --bifusion_gate_hidden_dim 0 --bifusion_gate_init_bias -2.0 \
+  --use_text_sparse_prompt --text_sparse_num_tokens 1 --text_sparse_prompt_source raw_global \
+  --text_sparse_raw_global_gate --text_sparse_raw_global_gate_init_bias -2.0 \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
+  >/dev/null 2>&1 &'
+
 # NUDT-SIRST optimized + token-level CLIP + GatedBackboneBiFusion + NoFiLM + raw_global gate TSP + TDP(token_xattn) + Qwen3 + MLLM (Windows PowerShell)
 python train_sirst_hq.py `
   --data_root "E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST" `
@@ -2983,3 +3128,392 @@ python train_sirst_hq.py `
   --use_text_dense_prompt --text_dense_prompt_type token_xattn --text_dense_num_heads 4 --text_dense_prompt_merge_alpha 0.3 `
   --init_from_baseline weights/efficient_sam_vitt.pt `
   --exp_name "NUDT_HQ_mllm_Qwen3_tokenCLIP_GatedBkBiFusion_NoFiLM_TSP1rawGate_TDPxattn03_SC_fixFreeze60"
+# ---------------------------------------------------------------------------
+# Self-Prompt (ASG + Self-Prompt + Prompt Robustness + Contrastive Prompt) 训练命令
+# ---------------------------------------------------------------------------
+
+# NUDT-SIRST + ASG2 + Self-Prompt
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=4;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_ASG2_SelfPrompt_sc_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+TS=$(date +%Y%m%d_%H%M%S); LOG_ROOT="outputs_sam_sirst_logs/${EXP}_${TS}"; mkdir -p "$LOG_ROOT";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 60 \
+  --val_thr_search --val_thr_min 0.37 --val_thr_max 0.41 --val_thr_step 0.01 \
+  --lr_head 1e-4 --lr_encoder 5e-6 \
+  --sctransnet_preproc --sc_use_gamma --sc_pos_prob 0.5 \
+  --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 \
+  --use_prompt_robust_loss --prompt_robust_weight 0.1 --prompt_robust_perturb_std 3.0 \
+  --use_asg_hq --asg_variant asg2 --asg_loc both \
+  --use_self_prompting \
+  --self_prompt_hidden_channels 64 \
+  --self_prompt_top_k_pos 4 --self_prompt_top_k_neg 4 \
+  --self_prompt_mix_ratio 0.5 --self_prompt_mix_schedule \
+  --self_prompt_sup_weight 0.3 --self_prompt_cl_weight 0.03 \
+  --self_prompt_inject_sparse_tokens \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
+  2>&1 | tee "${LOG_ROOT}/train.log"' &
+
+# IRSTD-1k + ASG2 + Self-Prompt
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=2;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/IRSTD-1k";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_ASG2_SelfPrompt_sc_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+TS=$(date +%Y%m%d_%H%M%S); LOG_ROOT="outputs_sam_sirst_logs/${EXP}_${TS}"; mkdir -p "$LOG_ROOT";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 60 \
+  --sctransnet_preproc --sc_use_gamma --sc_pos_prob 0.5 \
+  --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 \
+  --use_prompt_robust_loss --prompt_robust_weight 0.1 --prompt_robust_perturb_std 3.0 \
+  --use_asg_hq --asg_variant asg2 --asg_loc both \
+  --use_self_prompting \
+  --self_prompt_hidden_channels 64 \
+  --self_prompt_top_k_pos 4 --self_prompt_top_k_neg 4 \
+  --self_prompt_mix_ratio 0.5 --self_prompt_mix_schedule \
+  --self_prompt_sup_weight 0.3 --self_prompt_cl_weight 0.03 \
+  --self_prompt_inject_sparse_tokens \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
+  2>&1 | tee "${LOG_ROOT}/train.log"' &
+
+# NUAA-SIRST + ASG2 + Self-Prompt
+nohup bash -c 'export PYTHONUNBUFFERED=1; export CUDA_VISIBLE_DEVICES=5;
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUAA-SIRST";
+SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; MASK_SFX="_pixels0";
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}";
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_ASG2_SelfPrompt_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}";
+TS=$(date +%Y%m%d_%H%M%S); LOG_ROOT="outputs_sam_sirst_logs/${EXP}_${TS}"; mkdir -p "$LOG_ROOT";
+kpFlag=""; if [ "$KP" -eq 1 ]; then kpFlag="--keep_ratio_pad"; fi;
+python -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" $kpFlag --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 10 \
+  --val_thr_search --lr_head 1e-4 \
+  --sctransnet_preproc --sc_use_gamma --sc_pos_prob 0.5 \
+  --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 \
+  --use_prompt_robust_loss --prompt_robust_weight 0.1 --prompt_robust_perturb_std 3.0 \
+  --use_asg_hq --asg_variant asg2 --asg_loc both \
+  --use_self_prompting \
+  --self_prompt_hidden_channels 64 \
+  --self_prompt_top_k_pos 4 --self_prompt_top_k_neg 4 \
+  --self_prompt_mix_ratio 0.5 --self_prompt_mix_schedule \
+  --self_prompt_sup_weight 0.3 --self_prompt_cl_weight 0.03 \
+  --self_prompt_inject_sparse_tokens \
+  --mask_suffix "$MASK_SFX" \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" \
+  2>&1 | tee "${LOG_ROOT}/train.log"' &
+
+# ---------------------------------------------------------------------------
+# Self-Prompt (ASG + Self-Prompt + Prompt Robustness + Contrastive Prompt) Windows PowerShell
+# ---------------------------------------------------------------------------
+
+# 先按需切换显卡
+$env:PYTHONUNBUFFERED='1'
+$env:CUDA_VISIBLE_DEVICES='0'
+
+# NUDT-SIRST + ASG2 + Self-Prompt (Windows PowerShell)
+python train_sirst_hq.py `
+  --data_root "E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST" `
+  --train_txt "50_50\train.txt" --val_txt "50_50\test.txt" `
+  --size 256 --keep_ratio_pad --batch_size 4 --epochs 1000 --model vitt `
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 60 `
+  --val_thr_search --val_thr_min 0.37 --val_thr_max 0.41 --val_thr_step 0.01 `
+  --lr_head 1e-4 --lr_encoder 5e-6 `
+  --sctransnet_preproc --sc_use_gamma --sc_pos_prob 0.5 `
+  --boundary_prior_sampling --boundary_ratio 0.5 `
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 `
+  --use_prompt_robust_loss --prompt_robust_weight 0.1 --prompt_robust_perturb_std 3.0 `
+  --use_asg_hq --asg_variant asg2 --asg_loc both `
+  --use_self_prompting `
+  --self_prompt_hidden_channels 64 `
+  --self_prompt_top_k_pos 4 --self_prompt_top_k_neg 4 `
+  --self_prompt_mix_ratio 0.5 --self_prompt_mix_schedule `
+  --self_prompt_sup_weight 0.3 --self_prompt_cl_weight 0.03 `
+  --self_prompt_inject_sparse_tokens `
+  --init_from_baseline weights/efficient_sam_vitt.pt `
+  --out_dir "G:\EfficientSAM-main\outputs_sam_sirst_hq\NUDT_HQ_ASG2_SelfPrompt_SC_fixFreeze60" `
+  --exp_name "NUDT_HQ_ASG2_SelfPrompt_SC_fixFreeze60"
+
+# IRSTD-1k + ASG2 + Self-Prompt (Windows PowerShell)
+python train_sirst_hq.py `
+  --data_root "E:\code\SIRST-5K-main\SIRST-5K-main\dataset\IRSTD-1k" `
+  --train_txt "50_50\train.txt" --val_txt "50_50\test.txt" `
+  --size 256 --keep_ratio_pad --batch_size 4 --epochs 1000 --model vitt `
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 60 `
+  --sctransnet_preproc --sc_use_gamma --sc_pos_prob 0.5 `
+  --boundary_prior_sampling --boundary_ratio 0.5 `
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 `
+  --use_prompt_robust_loss --prompt_robust_weight 0.1 --prompt_robust_perturb_std 3.0 `
+  --use_asg_hq --asg_variant asg2 --asg_loc both `
+  --use_self_prompting `
+  --self_prompt_hidden_channels 64 `
+  --self_prompt_top_k_pos 4 --self_prompt_top_k_neg 4 `
+  --self_prompt_mix_ratio 0.5 --self_prompt_mix_schedule `
+  --self_prompt_sup_weight 0.3 --self_prompt_cl_weight 0.03 `
+  --self_prompt_inject_sparse_tokens `
+  --init_from_baseline weights/efficient_sam_vitt.pt `
+  --out_dir "G:\EfficientSAM-main\outputs_sam_sirst_hq\IRSTD1K_HQ_ASG2_SelfPrompt_SC_fixFreeze60" `
+  --exp_name "IRSTD1K_HQ_ASG2_SelfPrompt_SC_fixFreeze60"
+
+# NUAA-SIRST + ASG2 + Self-Prompt (Windows PowerShell)
+python train_sirst_hq.py `
+  --data_root "E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUAA-SIRST" `
+  --train_txt "50_50\train.txt" --val_txt "50_50\test.txt" `
+  --size 256 --keep_ratio_pad --batch_size 4 --epochs 1000 --model vitt `
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 10 `
+  --val_thr_search --lr_head 1e-4 `
+  --sctransnet_preproc --sc_use_gamma --sc_pos_prob 0.5 `
+  --boundary_prior_sampling --boundary_ratio 0.5 `
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 `
+  --use_prompt_robust_loss --prompt_robust_weight 0.1 --prompt_robust_perturb_std 3.0 `
+  --use_asg_hq --asg_variant asg2 --asg_loc both `
+  --use_self_prompting `
+  --self_prompt_hidden_channels 64 `
+  --self_prompt_top_k_pos 4 --self_prompt_top_k_neg 4 `
+  --self_prompt_mix_ratio 0.5 --self_prompt_mix_schedule `
+  --self_prompt_sup_weight 0.3 --self_prompt_cl_weight 0.03 `
+  --self_prompt_inject_sparse_tokens `
+  --mask_suffix "_pixels0" `
+  --init_from_baseline weights/efficient_sam_vitt.pt `
+  --out_dir "G:\EfficientSAM-main\outputs_sam_sirst_hq\NUAA_HQ_ASG2_SelfPrompt_SC_fixFreeze10" `
+  --exp_name "NUAA_HQ_ASG2_SelfPrompt_SC_fixFreeze10"
+
+# ==============================================================================
+# 【最新建议方案】频域增强 (ASG2) + 多粒度解码掩码重建 (AMGD)
+# 核心优势：AMGD 原地平替了静态特征补丁，具备自适应目标尺度的空间感知，不增加Fa。
+# ==============================================================================
+
+# --- Ubuntu Bash 版本 ---
+
+# IRSTD-1k + ASG2 + AMGD
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/IRSTD-1k"; \
+GPU=0; SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; \
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; \
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_ASG2_AMGD_unfreeze_sc_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}"; \
+TS=$(date +%Y%m%d_%H%M%S); LOG_ROOT="outputs_sam_sirst_logs/${EXP}_${TS}"; mkdir -p "$LOG_ROOT"; \
+CUDA_VISIBLE_DEVICES=${GPU} PYTHONUNBUFFERED=1 nohup python3 -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" --keep_ratio_pad --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 60 \
+  --sctransnet_preproc --sc_use_gamma --sc_pos_prob 0.5 \
+  --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 \
+  --val_thr_search \
+  --use_asg_hq --asg_variant asg2 --asg_loc both --use_amgd \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" >"$LOG_ROOT/train_${TS}.log" 2>&1 &
+
+# NUDT-SIRST + ASG2 + AMGD
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST"; \
+GPU=2; SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; \
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; \
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_ASG2_AMGD_unfreeze_sc_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}"; \
+TS=$(date +%Y%m%d_%H%M%S); LOG_ROOT="outputs_sam_sirst_logs/${EXP}_${TS}"; mkdir -p "$LOG_ROOT"; \
+CUDA_VISIBLE_DEVICES=${GPU} PYTHONUNBUFFERED=1 nohup python3 -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" --keep_ratio_pad --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 60 \
+  --lr_head 1e-4 --lr_encoder 5e-6 \
+  --n_pos 12 --n_neg 24 \
+  --sctransnet_preproc --sc_use_gamma --sc_pos_prob 0.5 \
+  --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 \
+  --val_thr_search \
+  --use_asg_hq --asg_variant asg2 --asg_loc both --use_amgd \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" >"$LOG_ROOT/train_${TS}.log" 2>&1 &
+
+# NUAA-SIRST + ASG2 + AMGD
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUAA-SIRST"; \
+GPU=6; SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; MASK_SFX="_pixels0"; \
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; SFX_TAG="msfx${MASK_SFX#}"; \
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_ASG2_AMGD_sc_bs${BS}_e${EPOCHS}_kp${KP}${SFX_TAG}${SPLIT_TAG}"; \
+TS=$(date +%Y%m%d_%H%M%S); LOG_ROOT="outputs_sam_sirst_logs/${EXP}_${TS}"; mkdir -p "$LOG_ROOT"; \
+CUDA_VISIBLE_DEVICES=${GPU} PYTHONUNBUFFERED=1 nohup python3 -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" --keep_ratio_pad --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 60 \
+  --n_pos 12 --n_neg 24 --lr_head 1e-4 \
+  --sctransnet_preproc --sc_use_gamma --sc_pos_prob 0.5 \
+  --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 \
+  --val_thr_search \
+  --use_asg_hq --asg_variant asg2 --asg_loc both --use_amgd \
+  --mask_suffix "$MASK_SFX" \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" >"$LOG_ROOT/train_${TS}.log" 2>&1 &
+
+
+# --- Windows PowerShell 版本 ---
+
+# IRSTD-1k + ASG2 + AMGD (Windows)
+python train_sirst_hq.py `
+  --data_root "E:\code\SIRST-5K-main\SIRST-5K-main\dataset\IRSTD-1k" `
+  --train_txt "50_50\train.txt" --val_txt "50_50\test.txt" `
+  --size 256 --keep_ratio_pad --batch_size 4 --epochs 1000 --model vitt `
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 60 `
+  --sctransnet_preproc --sc_use_gamma --sc_pos_prob 0.5 `
+  --boundary_prior_sampling --boundary_ratio 0.5 `
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 `
+  --val_thr_search `
+  --use_asg_hq --asg_variant asg2 --asg_loc both --use_amgd `
+  --init_from_baseline weights/efficient_sam_vitt.pt `
+  --out_dir "G:\EfficientSAM-main\outputs_sam_sirst_hq\IRSTD1K_HQ_ASG2_AMGD" `
+  --exp_name "IRSTD1K_HQ_ASG2_AMGD"
+
+# NUDT-SIRST + ASG2 + AMGD (Windows)
+python train_sirst_hq.py `
+  --data_root "E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST" `
+  --train_txt "50_50\train.txt" --val_txt "50_50\test.txt" `
+  --size 256 --keep_ratio_pad --batch_size 4 --epochs 1000 --model vitt `
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 60 `
+  --sctransnet_preproc --sc_use_gamma --sc_pos_prob 0.5 `
+  --boundary_prior_sampling --boundary_ratio 0.5 `
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 `
+  --val_thr_search `
+  --use_asg_hq --asg_variant asg2 --asg_loc both --use_amgd `
+  --init_from_baseline weights/efficient_sam_vitt.pt `
+  --out_dir "G:\EfficientSAM-main\outputs_sam_sirst_hq\NUDT_HQ_ASG2_AMGD" `
+  --exp_name "NUDT_HQ_ASG2_AMGD"
+
+# NUAA-SIRST + ASG2 + AMGD (Windows)
+python train_sirst_hq.py `
+  --data_root "E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUAA-SIRST" `
+  --train_txt "50_50\train.txt" --val_txt "50_50\test.txt" `
+  --size 256 --keep_ratio_pad --batch_size 4 --epochs 1000 --model vitt `
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 60 `
+  --sctransnet_preproc --sc_use_gamma --sc_pos_prob 0.5 `
+  --boundary_prior_sampling --boundary_ratio 0.5 `
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 `
+  --val_thr_search `
+  --use_asg_hq --asg_variant asg2 --asg_loc both --use_amgd `
+  --mask_suffix "_pixels0" `
+  --init_from_baseline weights/efficient_sam_vitt.pt `
+  --out_dir "G:\EfficientSAM-main\outputs_sam_sirst_hq\NUAA_HQ_ASG2_AMGD" `
+  --exp_name "NUAA_HQ_ASG2_AMGD"
+
+# ==============================================================================
+# 【进阶方案】DoG-AMGD (差分多粒度解码器) - 针对强杂波/弱小目标优化
+# 核心优势：引入空域差分高通滤波，在融合前剥离背景，极大增强针尖目标的显著性。
+# ==============================================================================
+
+# --- Ubuntu Bash 版本 (DoG-AMGD) ---
+
+# NUDT-SIRST + ASG2 + DoG-AMGD (核心推荐)
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUDT-SIRST"; \
+GPU=4; SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; \
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; \
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_ASG2_DoG_AMGD_sc_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}"; \
+TS=$(date +%Y%m%d_%H%M%S); LOG_ROOT="outputs_sam_sirst_logs/${EXP}_${TS}"; mkdir -p "$LOG_ROOT"; \
+CUDA_VISIBLE_DEVICES=${GPU} PYTHONUNBUFFERED=1 nohup python3 -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" --keep_ratio_pad --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 60 \
+  --lr_head 1e-4 --lr_encoder 5e-6 \
+  --n_pos 12 --n_neg 24 \
+  --sctransnet_preproc --sc_use_gamma --sc_pos_prob 0.5 \
+  --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 \
+  --val_thr_search \
+  --use_asg_hq --asg_variant asg2 --asg_loc both --use_amgd --use_dog_amgd \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" >"$LOG_ROOT/train_${TS}.log" 2>&1 &
+
+# IRSTD-1k + ASG2 + DoG-AMGD
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/IRSTD-1k"; \
+GPU=1; SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; \
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; \
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_ASG2_DoG_AMGD_sc_bs${BS}_e${EPOCHS}_kp${KP}${SPLIT_TAG}"; \
+TS=$(date +%Y%m%d_%H%M%S); LOG_ROOT="outputs_sam_sirst_logs/${EXP}_${TS}"; mkdir -p "$LOG_ROOT"; \
+CUDA_VISIBLE_DEVICES=${GPU} PYTHONUNBUFFERED=1 nohup python3 -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" --keep_ratio_pad --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 60 \
+  --n_pos 12 --n_neg 24 --lr_head 1e-4 \
+  --sctransnet_preproc --sc_use_gamma --sc_pos_prob 0.5 \
+  --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 \
+  --val_thr_search \
+  --use_asg_hq --asg_variant asg2 --asg_loc both --use_amgd --use_dog_amgd \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" >"$LOG_ROOT/train_${TS}.log" 2>&1 &
+
+# NUAA-SIRST + ASG2 + DoG-AMGD
+ROOT="/DATA20T/bip/cry/code/SIRST-5K-main/dataset/NUAA-SIRST"; \
+GPU=3; SIZE=256; BS=4; EPOCHS=1000; MODEL="vitt"; KP=1; TRAIN_DIR="50_50"; MASK_SFX="_pixels0"; \
+DATASET=$(basename "$ROOT"); SPLIT_TAG="_split-${TRAIN_DIR}"; SFX_TAG="msfx${MASK_SFX#}"; \
+EXP="${DATASET}_model-${MODEL}_size${SIZE}_HQ_ASG2_DoG_AMGD_sc_bs${BS}_e${EPOCHS}_kp${KP}${SFX_TAG}${SPLIT_TAG}"; \
+TS=$(date +%Y%m%d_%H%M%S); LOG_ROOT="outputs_sam_sirst_logs/${EXP}_${TS}"; mkdir -p "$LOG_ROOT"; \
+CUDA_VISIBLE_DEVICES=${GPU} PYTHONUNBUFFERED=1 nohup python3 -u train_sirst_hq_ubuntu.py \
+  --data_root "$ROOT" --train_txt "${TRAIN_DIR}/train.txt" --val_txt "${TRAIN_DIR}/test.txt" \
+  --size "$SIZE" --keep_ratio_pad --batch_size "$BS" --epochs "$EPOCHS" --model "$MODEL" \
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 60 \
+  --n_pos 12 --n_neg 24 --lr_head 1e-4 \
+  --sctransnet_preproc --sc_use_gamma --sc_pos_prob 0.5 \
+  --boundary_prior_sampling --boundary_ratio 0.5 \
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 \
+  --val_thr_search \
+  --use_asg_hq --asg_variant asg2 --asg_loc both --use_amgd --use_dog_amgd \
+  --mask_suffix "$MASK_SFX" \
+  --init_from_baseline weights/efficient_sam_vitt.pt --exp_name "$EXP" >"$LOG_ROOT/train_${TS}.log" 2>&1 &
+
+
+# --- Windows PowerShell 版本 (DoG-AMGD) ---
+
+# NUDT-SIRST + ASG2 + DoG-AMGD (Windows 核心推荐)
+python train_sirst_hq.py `
+  --data_root "E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUDT-SIRST" `
+  --train_txt "50_50\train.txt" --val_txt "50_50\test.txt" `
+  --size 256 --keep_ratio_pad --batch_size 4 --epochs 1000 --model vitt `
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 60 `
+  --lr_head 1e-4 --lr_encoder 5e-6 `
+  --n_pos 12 --n_neg 24 `
+  --sctransnet_preproc --sc_use_gamma --sc_pos_prob 0.5 `
+  --boundary_prior_sampling --boundary_ratio 0.5 `
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 `
+  --val_thr_search `
+  --use_asg_hq --asg_variant asg2 --asg_loc both --use_amgd --use_dog_amgd `
+  --init_from_baseline weights/efficient_sam_vitt.pt `
+  --out_dir "G:\EfficientSAM-main\outputs_sam_sirst_hq\NUDT_HQ_ASG2_DoG_AMGD" `
+  --exp_name "NUDT_HQ_ASG2_DoG_AMGD"
+
+# IRSTD-1k + ASG2 + DoG-AMGD (Windows)
+python train_sirst_hq.py `
+  --data_root "E:\code\SIRST-5K-main\SIRST-5K-main\dataset\IRSTD-1k" `
+  --train_txt "50_50\train.txt" --val_txt "50_50\test.txt" `
+  --size 256 --keep_ratio_pad --batch_size 4 --epochs 1000 --model vitt `
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 60 `
+  --lr_head 1e-4 --lr_encoder 5e-6 `
+  --n_pos 12 --n_neg 24 `
+  --sctransnet_preproc --sc_use_gamma --sc_pos_prob 0.5 `
+  --boundary_prior_sampling --boundary_ratio 0.5 `
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 `
+  --val_thr_search `
+  --use_asg_hq --asg_variant asg2 --asg_loc both --use_amgd --use_dog_amgd `
+  --init_from_baseline weights/efficient_sam_vitt.pt `
+  --out_dir "G:\EfficientSAM-main\outputs_sam_sirst_hq\IRSTD1K_HQ_ASG2_DoG_AMGD" `
+  --exp_name "IRSTD1K_HQ_ASG2_DoG_AMGD"
+
+# NUAA-SIRST + ASG2 + DoG-AMGD (Windows)
+python train_sirst_hq.py `
+  --data_root "E:\code\SIRST-5K-main\SIRST-5K-main\dataset\NUAA-SIRST" `
+  --train_txt "50_50\train.txt" --val_txt "50_50\test.txt" `
+  --size 256 --keep_ratio_pad --batch_size 4 --epochs 1000 --model vitt `
+  --hq_warmup_epochs 30 --freeze_encoder_epochs 60 `
+  --lr_head 1e-4 --lr_encoder 5e-6 `
+  --n_pos 12 --n_neg 24 `
+  --sctransnet_preproc --sc_use_gamma --sc_pos_prob 0.5 `
+  --boundary_prior_sampling --boundary_ratio 0.5 `
+  --use_point_loss --point_loss_points 4096 --point_loss_weight 0.3 `
+  --val_thr_search `
+  --use_asg_hq --asg_variant asg2 --asg_loc both --use_amgd --use_dog_amgd `
+  --mask_suffix "_pixels0" `
+  --init_from_baseline weights/efficient_sam_vitt.pt `
+  --out_dir "G:\EfficientSAM-main\outputs_sam_sirst_hq\NUAA_HQ_ASG2_DoG_AMGD" `
+  --exp_name "NUAA_HQ_ASG2_DoG_AMGD_DoG"

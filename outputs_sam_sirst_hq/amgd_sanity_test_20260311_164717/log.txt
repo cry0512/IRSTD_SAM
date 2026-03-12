@@ -1,0 +1,1 @@
+Run directory: ./outputs_sam_sirst_hq\amgd_sanity_test_20260311_164717

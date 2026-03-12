@@ -305,6 +305,8 @@ def build_efficient_sam_hq(
     use_ms_fusion: bool = False,
     use_detail_enhancer: bool = False,
     early_exit_layer: Optional[int] = None,
+    use_amgd: bool = False,
+    use_dog_amgd: bool = False,
 ):
     img_size = 1024
     encoder_patch_size = 16
@@ -355,6 +357,8 @@ def build_efficient_sam_hq(
             iou_head_depth=3,
             iou_head_hidden_dim=256,
             vit_dim=encoder_patch_embed_dim,
+            use_amgd=use_amgd,
+            use_dog_amgd=use_dog_amgd,
         ),
         pixel_mean=[0.485, 0.456, 0.406],
         pixel_std=[0.229, 0.224, 0.225],

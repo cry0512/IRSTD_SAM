@@ -1,4 +1,4 @@
-﻿from typing import List, Tuple, Type
+from typing import List, Tuple, Type
 
 import torch
 import torch.nn as nn
@@ -18,6 +18,8 @@ class MaskDecoderHQ(nn.Module):
         iou_head_depth: int = 3,
         iou_head_hidden_dim: int = 256,
         vit_dim: int = 1024,
+        use_amgd: bool = False,
+        use_dog_amgd: bool = False,
     ) -> None:
         super().__init__()
         self.transformer_dim = transformer_dim
@@ -38,23 +40,13 @@ class MaskDecoderHQ(nn.Module):
         )
         self.output_hypernetworks_mlps = nn.ModuleList(
             [
-                MLPBlock(
-                    input_dim=transformer_dim,
-                    hidden_dim=transformer_dim,
-                    output_dim=transformer_dim // 8,
-                    num_layers=3,
-                    act=activation,
-                )
+                MLPBlock(transformer_dim, transformer_dim, transformer_dim // 8, 3, act=activation)
                 for _ in range(self.num_mask_tokens)
             ]
         )
 
         self.iou_prediction_head = MLPBlock(
-            input_dim=transformer_dim,
-            hidden_dim=iou_head_hidden_dim,
-            output_dim=self.num_mask_tokens,
-            num_layers=iou_head_depth,
-            act=activation,
+            transformer_dim, iou_head_hidden_dim, self.num_mask_tokens, iou_head_depth, act=activation
         )
 
         # HQ branch: token + MLP + feature fusion
@@ -68,12 +60,51 @@ class MaskDecoderHQ(nn.Module):
         )
         # increase token count to include HQ token in the transformer outputs
         self.num_mask_tokens = self.num_mask_tokens + 1
-
+        
+        self.use_amgd = use_amgd
+        self.use_dog_amgd = use_dog_amgd
+        
+        # Original single-scale path for when use_amgd is False
         self.compress_vit_feat = nn.Sequential(
             nn.ConvTranspose2d(vit_dim, transformer_dim, kernel_size=2, stride=2),
             nn.GroupNorm(1, transformer_dim),
             activation(),
             nn.ConvTranspose2d(transformer_dim, transformer_dim // 8, kernel_size=2, stride=2),
+        )
+
+        self.amgd_fine = nn.Sequential(
+            nn.ConvTranspose2d(vit_dim, transformer_dim, kernel_size=2, stride=2),
+            nn.GroupNorm(1, transformer_dim),
+            activation(),
+            # Second upsampling
+            nn.ConvTranspose2d(transformer_dim, transformer_dim // 8, kernel_size=2, stride=2),
+            nn.Conv2d(transformer_dim // 8, transformer_dim // 8, kernel_size=1)
+        )
+
+        self.amgd_mid = nn.Sequential(
+            nn.ConvTranspose2d(vit_dim, transformer_dim, kernel_size=2, stride=2),
+            nn.GroupNorm(1, transformer_dim),
+            activation(),
+            # Second upsampling 
+            nn.ConvTranspose2d(transformer_dim, transformer_dim // 8, kernel_size=2, stride=2),
+            nn.Conv2d(transformer_dim // 8, transformer_dim // 8, kernel_size=3, padding=1)
+        )
+
+        self.amgd_coarse = nn.Sequential(
+            nn.ConvTranspose2d(vit_dim, transformer_dim, kernel_size=2, stride=2),
+            nn.GroupNorm(1, transformer_dim),
+            activation(),
+            # Second upsampling
+            nn.ConvTranspose2d(transformer_dim, transformer_dim // 8, kernel_size=2, stride=2),
+            nn.Conv2d(transformer_dim // 8, transformer_dim // 8, kernel_size=5, padding=2)
+        )
+
+        self.amgd_router = MLPBlock(
+            input_dim=transformer_dim,
+            hidden_dim=transformer_dim // 2,
+            output_dim=3,
+            num_layers=2,
+            act=activation,
         )
         self.embedding_encoder = nn.Sequential(
             nn.ConvTranspose2d(transformer_dim, transformer_dim // 4, kernel_size=2, stride=2),
@@ -117,8 +148,35 @@ class MaskDecoderHQ(nn.Module):
         upscaled_embedding_sam = self.output_upscaling(src)
 
         # HQ features fusion
-        vit_features = interm_embeddings.permute(0, 3, 1, 2)  # [B,C',H',W']
-        hq_features = self.embedding_encoder(image_embeddings) + self.compress_vit_feat(vit_features)
+        vit_features = interm_embeddings.permute(0, 3, 1, 2)  # [B, C', H', W']
+        
+        if self.use_amgd:
+            # AMGD Adaptive Multi-Grained Feature Fusion
+            hq_token_context = mask_tokens_out[:, -1, :]  # [B, C] extract HQ token
+            routing_weights = F.softmax(self.amgd_router(hq_token_context), dim=-1)  # [B, 3]
+
+            feat_fine = self.amgd_fine(vit_features)      # [B, C/8, H, W]
+            feat_mid = self.amgd_mid(vit_features)        # [B, C/8, H, W]
+            feat_coarse = self.amgd_coarse(vit_features)  # [B, C/8, H, W]
+
+            w_base = routing_weights[:, 0].view(b, 1, 1, 1)
+            w_opt2 = routing_weights[:, 1].view(b, 1, 1, 1)
+            w_opt3 = routing_weights[:, 2].view(b, 1, 1, 1)
+
+            if self.use_dog_amgd:
+                # === DoG (Difference of Gaussians) Spatial High-Pass ===
+                # Strip local backgrounds to isolate high-frequency anomalies
+                dog_fine = feat_fine - feat_mid
+                dog_mid = feat_mid - feat_coarse
+                vit_features_fused = (feat_fine * w_base) + (dog_fine * w_opt2) + (dog_mid * w_opt3)
+            else:
+                # Original Multi-Grained Additive Fusion
+                vit_features_fused = (feat_fine * w_base) + (feat_mid * w_opt2) + (feat_coarse * w_opt3)
+        else:
+            # Original fallback 
+            vit_features_fused = self.compress_vit_feat(vit_features)
+
+        hq_features = self.embedding_encoder(image_embeddings) + vit_features_fused
         # Optional radial frequency gate on HQ features
         if getattr(self, "radial_gate", None) is not None:
             try:
